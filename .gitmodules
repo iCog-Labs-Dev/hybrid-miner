@@ -1,0 +1,3 @@
+[submodule "hyperon-miner"]
+	path = hyperon-miner
+	url = https://github.com/trueagi-io/hyperon-miner.git
