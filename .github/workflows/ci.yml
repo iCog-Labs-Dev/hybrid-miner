@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install package and development tools
+        run: python -m pip install -e ".[dev]"
+      - name: Check formatting and lint
+        run: |
+          python -m black --check src tests
+          python -m ruff check src tests
+      - name: Type check
+        run: python -m mypy src/hybrid_miner
+      - name: Test contracts
+        run: python -m pytest -q
+      - name: Check pinned Hyperon Miner submodule
+        run: |
+          test "$(git ls-tree HEAD hyperon-miner | cut -f1 | cut -d' ' -f1)" = 160000
+          test "$(git rev-parse HEAD:hyperon-miner)" = e955479bca1603597529d175cc22ac1583c67e15
+          git config -f .gitmodules --get submodule.hyperon-miner.url
