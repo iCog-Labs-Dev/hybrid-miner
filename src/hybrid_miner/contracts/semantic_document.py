@@ -98,6 +98,14 @@ class SemanticAssertion(_ContractModel):
     arguments: tuple[str, ...] = Field(min_length=1)
     argument_types: tuple[str, ...] = Field(min_length=1)
     status: Literal["extracted-hypothesis"]
+    # Source presentation is distinct from the parser's extraction status.
+    # None means it was not classified; it must never imply "asserted".
+    factuality: Literal["asserted", "opinion", "speculative", "hypothetical"] | None = (
+        None
+    )
+    # An explicit source condition for this hypothetical assertion. The target
+    # must be a declared Clause entity; this is not a derived inference rule.
+    conditional_on: str | None = None
     confidence: float = Field(strict=True, ge=0.0, le=1.0, allow_inf_nan=False)
     source_spans: tuple[SourceSpan, ...] = Field(min_length=1)
     alternatives: tuple[str, ...] = ()
@@ -142,12 +150,19 @@ class SemanticAssertion(_ContractModel):
     def validate_provisional_relation_id(cls, value: str | None) -> str | None:
         return _identifier(value) if value is not None else None
 
+    @field_validator("conditional_on")
+    @classmethod
+    def validate_conditional_on(cls, value: str | None) -> str | None:
+        return _identifier(value) if value is not None else None
+
     @model_validator(mode="after")
     def validate_structure(self) -> SemanticAssertion:
         if len(self.arguments) != len(self.argument_types):
             raise ValueError("arguments and argument_types must have equal length")
         if not math.isfinite(self.confidence):
             raise ValueError("confidence must be finite")
+        if self.conditional_on is not None and self.factuality != "hypothetical":
+            raise ValueError("conditional_on requires hypothetical factuality")
         if self.predicate == "ProvisionalRelation":
             if self.provisional_relation_id is None:
                 raise ValueError("ProvisionalRelation requires provisional_relation_id")
@@ -189,6 +204,16 @@ class SemanticDocument(_ContractModel):
             if entity.span is not None and entity.span.end > source_length:
                 raise ValueError(f"entity {entity.id!r} span exceeds source text")
         for assertion in self.assertions:
+            if assertion.conditional_on is not None:
+                condition = entities.get(assertion.conditional_on)
+                if (
+                    condition is None
+                    or condition.type != "Clause"
+                    or condition.span is None
+                ):
+                    raise ValueError(
+                        "conditional_on must reference a source-anchored Clause entity"
+                    )
             for span in assertion.source_spans:
                 if span.end > source_length:
                     raise ValueError("assertion source span exceeds source text")
@@ -208,8 +233,14 @@ class SemanticDocument(_ContractModel):
     def canonical_json(self) -> str:
         """Serialize identically across processes for auditing and hashing."""
 
+        payload = self.model_dump(mode="json")
+        for assertion in payload["assertions"]:
+            if assertion["factuality"] is None:
+                del assertion["factuality"]
+            if assertion["conditional_on"] is None:
+                del assertion["conditional_on"]
         return json.dumps(
-            self.model_dump(mode="json"),
+            payload,
             allow_nan=False,
             ensure_ascii=False,
             separators=(",", ":"),

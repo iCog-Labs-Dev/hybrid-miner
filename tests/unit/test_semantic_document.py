@@ -168,6 +168,60 @@ def test_confidence_and_status_are_constrained():
         SemanticDocument.model_validate(payload)
 
 
+def test_factuality_is_optional_without_defaulting_to_asserted():
+    document = SemanticDocument.model_validate(_normalized_payload())
+    assert document.assertions[0].factuality is None
+    assert document.assertions[0].conditional_on is None
+    serialized_assertion = json.loads(document.canonical_json())["assertions"][0]
+    assert "factuality" not in serialized_assertion
+    assert "conditional_on" not in serialized_assertion
+
+    payload = _normalized_payload()
+    payload["assertions"][0]["factuality"] = "hypothetical"
+    classified = SemanticDocument.model_validate(payload)
+    assert classified.assertions[0].factuality == "hypothetical"
+    assert (
+        json.loads(classified.canonical_json())["assertions"][0]["factuality"]
+        == "hypothetical"
+    )
+
+    payload["assertions"][0]["factuality"] = "proven"
+    with pytest.raises(ValidationError, match="factuality"):
+        SemanticDocument.model_validate(payload)
+
+
+def test_conditional_scope_requires_hypothetical_assertion_and_clause():
+    payload = _normalized_payload()
+    assertion = payload["assertions"][0]
+    assertion["factuality"] = "hypothetical"
+    assertion["conditional_on"] = "clause-a"
+    document = SemanticDocument.model_validate(payload)
+    assert document.assertions[0].conditional_on == "clause-a"
+    assert (
+        json.loads(document.canonical_json())["assertions"][0]["conditional_on"]
+        == "clause-a"
+    )
+
+    assertion["factuality"] = "asserted"
+    with pytest.raises(ValidationError, match="requires hypothetical"):
+        SemanticDocument.model_validate(payload)
+
+    assertion["factuality"] = "hypothetical"
+    assertion["conditional_on"] = "missing"
+    with pytest.raises(ValidationError, match="source-anchored Clause"):
+        SemanticDocument.model_validate(payload)
+
+    assertion["conditional_on"] = "clause-a"
+    payload["entities"][0]["type"] = "Entity"
+    with pytest.raises(ValidationError, match="source-anchored Clause"):
+        SemanticDocument.model_validate(payload)
+
+    payload["entities"][0]["type"] = "Clause"
+    payload["entities"][0]["span"] = None
+    with pytest.raises(ValidationError, match="source-anchored Clause"):
+        SemanticDocument.model_validate(payload)
+
+
 def test_no_assertions_does_not_force_a_false_extraction():
     payload = _normalized_payload()
     payload["assertions"] = []
