@@ -3,8 +3,9 @@
 import json
 
 import pytest
-from hybrid_miner.contracts import SemanticDocument
 from pydantic import ValidationError
+
+from hybrid_miner.contracts import SemanticDocument
 
 
 def _payload() -> dict:
