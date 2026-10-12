@@ -11,9 +11,9 @@ import json
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import quote
 
 from hybrid_miner.contracts.semantic_document import SemanticDocument
+from hybrid_miner.emission import symbols
 from hybrid_miner.ontology import OntologyBundle
 
 
@@ -28,36 +28,12 @@ class EmissionResult:
     provenance_path: Path
 
 
-def _component(value: str) -> str:
-    """Escape delimiters and PeTTa syntax without obscuring ordinary names."""
-
-    return quote(value, safe="-._~")
-
-
 def _entity_symbol(document: SemanticDocument, entity_id: str) -> str:
-    return ":".join(
-        (
-            "ent",
-            _component(document.corpus_id),
-            _component(document.document_id),
-            _component(entity_id),
-        )
-    )
-
-
-def _predicate_symbol(predicate: str, version: str) -> str:
-    return f"{_component(predicate)}@{_component(version)}"
+    return symbols.entity_symbol(document.corpus_id, document.document_id, entity_id)
 
 
 def _evidence_symbol(document: SemanticDocument, index: int) -> str:
-    return ":".join(
-        (
-            "ev",
-            _component(document.corpus_id),
-            _component(document.document_id),
-            str(index),
-        )
-    )
+    return symbols.evidence_symbol(document.corpus_id, document.document_id, index)
 
 
 def _fact(
@@ -70,12 +46,12 @@ def _fact(
     if assertion.predicate == "ProvisionalRelation":
         version = f"{bundle.bundle_id}@{bundle.bundle_version}"
         assert assertion.provisional_relation_id is not None
-        relation = f"rel:{_component(assertion.provisional_relation_id)}"
+        relation = f"rel:{symbols.component(assertion.provisional_relation_id)}"
         operands = [relation]
     else:
         version = versions[assertion.predicate]
         operands = []
-    head = _predicate_symbol(assertion.predicate, version)
+    head = symbols.predicate_symbol(assertion.predicate, version)
     operands.extend(
         _entity_symbol(document, entity_id) for entity_id in assertion.arguments
     )
@@ -103,13 +79,13 @@ def _assertion_metadata(
     lines = [
         f"(AssertionEvidence {evidence_id} {fact} {assertion.status} "
         f"{repr(assertion.confidence)})",
-        f"(ParserProvenance {evidence_id} {_component(document.parser.model)} "
-        f"{_component(document.parser.parser_version)} "
-        f"{_component(document.parser.prompt_version)})",
-        f"(PredicateOntology {evidence_id} {_component(version)})",
+        f"(ParserProvenance {evidence_id} {symbols.component(document.parser.model)} "
+        f"{symbols.component(document.parser.parser_version)} "
+        f"{symbols.component(document.parser.prompt_version)})",
+        f"(PredicateOntology {evidence_id} {symbols.component(version)})",
     ]
     lines.extend(
-        f"(ParserOntology {evidence_id} {_component(ontology_version)})"
+        f"(ParserOntology {evidence_id} {symbols.component(ontology_version)})"
         for ontology_version in document.parser.ontology_versions
     )
     lines.extend(
@@ -117,7 +93,7 @@ def _assertion_metadata(
         for span in assertion.source_spans
     )
     lines.extend(
-        f"(Alternative {evidence_id} {_component(alternative)})"
+        f"(Alternative {evidence_id} {symbols.component(alternative)})"
         for alternative in assertion.alternatives
     )
     if assertion.factuality is not None:
@@ -181,12 +157,18 @@ def emit_petta(
             )
             created.append(provenance)
             for predicate in bundle.predicates:
-                head = _predicate_symbol(predicate.name, predicate.ontology_version)
+                head = symbols.predicate_symbol(
+                    predicate.name, predicate.ontology_version
+                )
+                metadata_writer.write(
+                    f"(PredicateIdentity {head} {symbols.component(predicate.name)} "
+                    f"{symbols.component(predicate.ontology_version)})\n"
+                )
                 for position, allowed in enumerate(predicate.argument_types):
                     for entity_type in allowed:
                         metadata_writer.write(
                             f"(AllowedType {head} {position} "
-                            f"{_component(entity_type)})\n"
+                            f"{symbols.component(entity_type)})\n"
                         )
             for line_number, line in enumerate(reader, start=1):
                 try:
@@ -201,7 +183,7 @@ def emit_petta(
                 for entity in document.entities:
                     metadata_writer.write(
                         f"(EntityType {_entity_symbol(document, entity.id)} "
-                        f"{_component(entity.type)})\n"
+                        f"{symbols.component(entity.type)})\n"
                     )
                 for index in range(len(document.assertions)):
                     fact, evidence = _fact(document, index, versions, bundle)

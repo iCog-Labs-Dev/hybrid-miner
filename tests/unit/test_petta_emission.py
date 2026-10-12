@@ -86,6 +86,7 @@ def test_emits_versioned_fact_and_preserves_evidence(tmp_path) -> None:
     metadata_text = metadata.read_text(encoding="utf-8")
     assert f"(AssertionEvidence {evidence['evidence_id']} {fact} " in metadata_text
     assert f"(SourceSpan {evidence['evidence_id']} 5 9)" in metadata_text
+    assert "(PredicateIdentity Event@upper-v1 Event upper-v1)" in metadata_text
     assert "(AllowedType Event@upper-v1 0 Event)" in metadata_text
 
     second_atoms = tmp_path / "second.metta"
