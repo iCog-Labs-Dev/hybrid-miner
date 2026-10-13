@@ -140,6 +140,7 @@ def emit_petta(
     fact_count = 0
     seen: set[tuple[str, str]] = set()
     emitted_facts: set[str] = set()
+    provisional_heads: set[tuple[str, str]] = set()
     created: list[Path] = []
     try:
         with ExitStack() as files:
@@ -187,6 +188,19 @@ def emit_petta(
                     )
                 for index in range(len(document.assertions)):
                     fact, evidence = _fact(document, index, versions, bundle)
+                    assertion = document.assertions[index]
+                    if assertion.predicate == "ProvisionalRelation":
+                        assert assertion.provisional_relation_id is not None
+                        head = symbols.predicate_symbol(
+                            "ProvisionalRelation", str(evidence["ontology_version"])
+                        )
+                        relation = symbols.component(assertion.provisional_relation_id)
+                        identity = (head, relation)
+                        if identity not in provisional_heads:
+                            metadata_writer.write(
+                                f"(ProvisionalPredicate {head} rel:{relation})\n"
+                            )
+                            provisional_heads.add(identity)
                     if fact not in emitted_facts:
                         atom_writer.write(fact + "\n")
                         emitted_facts.add(fact)
