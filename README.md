@@ -23,18 +23,20 @@ Implemented:
 - PeTTa emission: converts validated assertions to version-qualified relation
   facts, a separate queryable PeTTa evidence space, and a JSONL provenance
   sidecar.
+- PeTTa ingress: checks emitted facts against evidence, predicate declarations,
+  entity types, allowed argument types, and recorded source spans. A rejected
+  assertion is quarantined and prevents release of a partial mining graph.
 - A depth-zero adapter that runs the pinned Hyperon Miner on the emitted fact
   graph and records alpha-normalized exact support with runtime revisions.
 - Exact PeTTa binding recovery linked to validated source assertions, followed
   by construction of typed, source-linked candidate `PatternRecord` artifacts.
-- A pinned PeTTa/Hyperon Miner smoke run for a controlled support-count fixture.
 - Unit tests, formatting/lint/type-check configuration, CI, and a pinned
   upstream Git submodule.
 
-Not implemented: production ontology catalog ownership, PeTTa-side assertion
-validation and canonicalization, candidate scoring and Tier 2
-promotion, non-myopic search, SVM/STLM control, or causal experiments.
-The smoke run executes the submodule locally; CI does not yet execute PeTTa.
+Not implemented: production ontology catalog ownership, PeTTa-side
+source-text offset validation or full canonicalization, candidate scoring and
+Tier 2 promotion, non-myopic search, SVM/STLM control, or causal experiments.
+CI does not yet execute PeTTa.
 
 ## Repository layout
 
@@ -50,7 +52,8 @@ hybrid-miner/
 |   |   `-- bundle.py
 |   |-- ingestion/
 |   |   |-- __main__.py
-|   |   `-- semantic_documents.py
+|   |   |-- semantic_documents.py
+|   |   `-- petta_gate.py
 |   |-- emission/
 |   |   |-- __main__.py
 |   |   |-- emit_petta.py
@@ -71,8 +74,8 @@ hybrid-miner/
 |   |-- test_petta_emission.py
 |   |-- test_mining_canonicalization.py
 |   |-- test_exact_matches.py
-|   `-- test_pattern_record_builder.py
-|-- tests/smoke/               # local pinned PeTTa runtime check
+|   |-- test_pattern_record_builder.py
+|   `-- test_petta_gate.py
 |-- hyperon-miner/             # pinned Git submodule
 |-- .github/workflows/ci.yml
 |-- .pre-commit-config.yaml
@@ -94,8 +97,8 @@ tests; they are not present today.
   in `pyproject.toml`.
 - No model API, GPU, MORK, Redis, or Docker is required for contracts,
   ingestion, emission, or unit tests. Mining requires SWI-Prolog, the pinned
-  Hyperon Miner submodule, and a PeTTa checkout at the revision recorded in
-  `tests/smoke/petta_revision.txt`.
+  Hyperon Miner submodule, and a PeTTa checkout. The runtime exercised for
+  ingress and mining is revision `ebdb51168135f7fdf68c59acf7521a1b85c19ba0`.
 
 The `hyperon-miner/` submodule is pinned to
 `e955479bca1603597529d175cc22ac1583c67e15`. Mining requires this
@@ -120,8 +123,7 @@ pre-commit install
 ```
 
 CI runs the unit tests, formatting, lint, type checks, and submodule-pin
-verification. It does not execute the upstream miner. The local PeTTa check
-is documented in `tests/smoke/README.md`.
+verification. It does not execute PeTTa or the upstream miner.
 
 ## Parser-document ingestion and PeTTa emission
 
@@ -131,9 +133,10 @@ From this repository's root:
 ```sh
 python -m hybrid_miner.ingestion --bundle bundle.json --input documents.jsonl --accepted-output accepted.jsonl --rejected-output rejected.jsonl
 python -m hybrid_miner.emission --bundle bundle.json --input accepted.jsonl --atoms-output facts.metta --metadata-output facts.metadata.metta --provenance-output facts.provenance.jsonl
-python -m hybrid_miner.mining --atoms facts.metta --petta-root /path/to/PeTTa --miner-root ./hyperon-miner --output support.jsonl --min-support 2
-python -m hybrid_miner.mining.exact_matches --bundle bundle.json --documents accepted.jsonl --atoms facts.metta --provenance facts.provenance.jsonl --support support.jsonl --petta-root /path/to/PeTTa --miner-root ./hyperon-miner --output exact-bindings.jsonl --rejected-output exact-rejected.jsonl
-python -m hybrid_miner.mining.build_pattern_records --bundle bundle.json --documents accepted.jsonl --atoms facts.metta --provenance facts.provenance.jsonl --exact exact-bindings.jsonl --output pattern-records.jsonl --rejected-output pattern-records.rejected.jsonl
+python -m hybrid_miner.ingestion.petta_gate --bundle bundle.json --atoms facts.metta --metadata facts.metadata.metta --provenance facts.provenance.jsonl --petta-root /path/to/PeTTa --accepted-output gated-facts.metta --rejected-output gate-rejected.jsonl
+python -m hybrid_miner.mining --atoms gated-facts.metta --petta-root /path/to/PeTTa --miner-root ./hyperon-miner --output support.jsonl --min-support 2
+python -m hybrid_miner.mining.exact_matches --bundle bundle.json --documents accepted.jsonl --atoms gated-facts.metta --provenance facts.provenance.jsonl --support support.jsonl --petta-root /path/to/PeTTa --miner-root ./hyperon-miner --output exact-bindings.jsonl --rejected-output exact-rejected.jsonl
+python -m hybrid_miner.mining.build_pattern_records --bundle bundle.json --documents accepted.jsonl --atoms gated-facts.metta --provenance facts.provenance.jsonl --exact exact-bindings.jsonl --output pattern-records.jsonl --rejected-output pattern-records.rejected.jsonl
 ```
 
 Ingestion rejects malformed records, ontology-version and signature mismatches,
@@ -148,6 +151,13 @@ and parser provenance; JSONL retains the complete assertion record. The
 metadata also maps each version-qualified PeTTa predicate symbol to its base
 relation name and ontology version. The suffix is an exact-match graph identity,
 not an embedding input or a replacement for the structured relation identity.
+The PeTTa ingress stage checks that each emitted assertion has a corresponding
+fact, evidence record, predicate declaration, matching entity types, allowed
+catalog argument types, and source-span metadata. Source-span offsets remain
+Python-validated against the source text; PeTTa checks the emitted declarations.
+If any assertion fails, the command exits nonzero, writes an empty graph, and
+records the failures. Repair the source artifact and rerun rather than mining
+an inconsistent subset. Only `gated-facts.metta` is passed to mining.
 The mining adapter executes the upstream depth-zero miner and serializes observed
 support with stable variable names, conjunction order, graph digest, and runtime
 revisions. The exact-match audit then reruns each supported pattern in PeTTa,
@@ -244,7 +254,6 @@ parser team.
 - Keep later learned-search and causal modules separate from the greedy
   baseline until each has tests and measured evidence.
 
-The pinned smoke fixture establishes one upstream support count. A small
-parser-derived graph has also produced one source-linked candidate record.
-This does not establish general mining quality, cross-repository promotion,
-or hardware performance.
+A parser-derived graph has produced source-linked candidate records with
+the pinned runtime. This does not establish general mining quality,
+cross-repository promotion, or hardware performance.
