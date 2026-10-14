@@ -23,11 +23,14 @@ Implemented:
 - PeTTa emission: converts validated assertions to version-qualified relation
   facts, a separate queryable PeTTa evidence space, and a JSONL provenance
   sidecar.
-- PeTTa ingress: checks emitted facts against evidence, predicate declarations,
-  entity types, allowed argument types, and recorded source spans. A rejected
-  assertion is quarantined and prevents release of a partial mining graph.
+- PeTTa ingress: a packaged MeTTa rule checks emitted facts against evidence,
+  predicate declarations, entity types, allowed argument types, and recorded
+  source spans. The rule places each assertion in an accepted or quarantined
+  PeTTa space. A rejected assertion prevents release of a partial mining graph.
 - A depth-zero adapter that runs the pinned Hyperon Miner on the emitted fact
   graph and records alpha-normalized exact support with runtime revisions.
+- An admitted-support entry point that runs PeTTa ingress and passes only its
+  accepted graph to the miner; quarantine stops mining before support output.
 - Exact PeTTa binding recovery linked to validated source assertions, followed
   by construction of typed, source-linked candidate `PatternRecord` artifacts.
 - Unit tests, formatting/lint/type-check configuration, CI, and a pinned
@@ -53,13 +56,15 @@ hybrid-miner/
 |   |-- ingestion/
 |   |   |-- __main__.py
 |   |   |-- semantic_documents.py
-|   |   `-- petta_gate.py
+|   |   |-- petta_gate.py
+|   |   `-- ingest_semantic_assertion.metta
 |   |-- emission/
 |   |   |-- __main__.py
 |   |   |-- emit_petta.py
 |   |   `-- symbols.py
 |   `-- mining/
 |       |-- __main__.py
+|       |-- admitted_support.py
 |       |-- petta_runner.py
 |       |-- canonicalize_patterns.py
 |       |-- exact_matches.py
@@ -75,6 +80,7 @@ hybrid-miner/
 |   |-- test_mining_canonicalization.py
 |   |-- test_exact_matches.py
 |   |-- test_pattern_record_builder.py
+|   |-- test_admitted_support.py
 |   `-- test_petta_gate.py
 |-- hyperon-miner/             # pinned Git submodule
 |-- .github/workflows/ci.yml
@@ -133,8 +139,7 @@ From this repository's root:
 ```sh
 python -m hybrid_miner.ingestion --bundle bundle.json --input documents.jsonl --accepted-output accepted.jsonl --rejected-output rejected.jsonl
 python -m hybrid_miner.emission --bundle bundle.json --input accepted.jsonl --atoms-output facts.metta --metadata-output facts.metadata.metta --provenance-output facts.provenance.jsonl
-python -m hybrid_miner.ingestion.petta_gate --bundle bundle.json --atoms facts.metta --metadata facts.metadata.metta --provenance facts.provenance.jsonl --petta-root /path/to/PeTTa --accepted-output gated-facts.metta --rejected-output gate-rejected.jsonl
-python -m hybrid_miner.mining --atoms gated-facts.metta --petta-root /path/to/PeTTa --miner-root ./hyperon-miner --output support.jsonl --min-support 2
+python -m hybrid_miner.mining.admitted_support --bundle bundle.json --emitted-atoms facts.metta --metadata facts.metadata.metta --provenance facts.provenance.jsonl --petta-root /path/to/PeTTa --miner-root ./hyperon-miner --admitted-output gated-facts.metta --quarantine-output gate-rejected.jsonl --support-output support.jsonl --min-support 2
 python -m hybrid_miner.mining.exact_matches --bundle bundle.json --documents accepted.jsonl --atoms gated-facts.metta --provenance facts.provenance.jsonl --support support.jsonl --petta-root /path/to/PeTTa --miner-root ./hyperon-miner --output exact-bindings.jsonl --rejected-output exact-rejected.jsonl
 python -m hybrid_miner.mining.build_pattern_records --bundle bundle.json --documents accepted.jsonl --atoms gated-facts.metta --provenance facts.provenance.jsonl --exact exact-bindings.jsonl --output pattern-records.jsonl --rejected-output pattern-records.rejected.jsonl
 ```
@@ -151,13 +156,23 @@ and parser provenance; JSONL retains the complete assertion record. The
 metadata also maps each version-qualified PeTTa predicate symbol to its base
 relation name and ontology version. The suffix is an exact-match graph identity,
 not an embedding input or a replacement for the structured relation identity.
-The PeTTa ingress stage checks that each emitted assertion has a corresponding
-fact, evidence record, predicate declaration, matching entity types, allowed
-catalog argument types, and source-span metadata. Source-span offsets remain
-Python-validated against the source text; PeTTa checks the emitted declarations.
+The PeTTa ingress rule checks that each emitted assertion has a corresponding
+fact, evidence record, predicate declaration, entity-type and allowed-type
+declarations, and source-span metadata. It makes one admission decision per
+assertion; Python serializes that decision without repeating the same PeTTa
+presence queries. Document schema, ontology-bundle compatibility, and
+source-span offsets are validated against the source text before emission.
+The ingress rule checks artifact consistency, not independent semantic truth,
+and does not infer new relations. Predicate arity and argument-type validation
+belong to document validation; ingress checks that the emitted declarations
+are present, not whether they independently satisfy the YAML signature.
 If any assertion fails, the command exits nonzero, writes an empty graph, and
-records the failures. Repair the source artifact and rerun rather than mining
-an inconsistent subset. Only `gated-facts.metta` is passed to mining.
+records the failures. The integrated `admitted_support` command does not call
+Hyperon Miner or create support output after quarantine; it passes the gate's
+returned graph path directly to mining on success. Repair the source artifact
+and rerun rather than mining an inconsistent subset. The separate
+`python -m hybrid_miner.mining --atoms graph.metta ...` command remains available
+for independent raw-graph mining; it does not attest PeTTa admission.
 The mining adapter executes the upstream depth-zero miner and serializes observed
 support with stable variable names, conjunction order, graph digest, and runtime
 revisions. The exact-match audit then reruns each supported pattern in PeTTa,
