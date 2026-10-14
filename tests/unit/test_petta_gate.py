@@ -91,15 +91,11 @@ def test_gate_quarantines_failed_petta_check(tmp_path, monkeypatch) -> None:
         provenance_path=provenance,
     )
 
-    def without_allowed_type(entries, **_kwargs):
-        return {
-            (index, name)
-            for index, entry in enumerate(entries)
-            for name, _ in entry.checks
-            if name != "a0"
-        }
+    def quarantined_by_petta(entries, **_kwargs):
+        assert len(entries) == 1
+        return set(), {0}
 
-    monkeypatch.setattr(petta_gate, "_petta_checks", without_allowed_type)
+    monkeypatch.setattr(petta_gate, "_petta_checks", quarantined_by_petta)
     accepted = tmp_path / "gated.metta"
     rejected = tmp_path / "rejected.jsonl"
     result = petta_gate.gate_emitted_facts(
@@ -113,7 +109,9 @@ def test_gate_quarantines_failed_petta_check(tmp_path, monkeypatch) -> None:
     )
     assert (result.accepted, result.rejected, result.facts) == (0, 1, 0)
     assert accepted.read_text(encoding="utf-8") == ""
-    assert "a0" in json.loads(rejected.read_text(encoding="utf-8"))["error"]
+    assert (
+        "PeTTa quarantined" in json.loads(rejected.read_text(encoding="utf-8"))["error"]
+    )
 
 
 def test_gate_does_not_publish_a_partial_graph(tmp_path, monkeypatch) -> None:
@@ -136,15 +134,11 @@ def test_gate_does_not_publish_a_partial_graph(tmp_path, monkeypatch) -> None:
         provenance_path=provenance,
     )
 
-    def one_failed_check(entries, **_kwargs):
-        return {
-            (index, name)
-            for index, entry in enumerate(entries)
-            for name, _ in entry.checks
-            if (index, name) != (0, "a0")
-        }
+    def one_quarantined(entries, **_kwargs):
+        assert len(entries) == 2
+        return {1}, {0}
 
-    monkeypatch.setattr(petta_gate, "_petta_checks", one_failed_check)
+    monkeypatch.setattr(petta_gate, "_petta_checks", one_quarantined)
     accepted = tmp_path / "gated.metta"
     rejected = tmp_path / "rejected.jsonl"
     result = petta_gate.gate_emitted_facts(
@@ -179,7 +173,11 @@ def test_gate_rejects_provenance_ontology_mismatch_before_petta(
     payload = json.loads(provenance.read_text(encoding="utf-8"))
     payload["ontology_version"] = "upper-v2"
     provenance.write_text(json.dumps(payload) + "\n", encoding="utf-8")
-    monkeypatch.setattr(petta_gate, "_petta_checks", lambda _entries, **_kwargs: set())
+    monkeypatch.setattr(
+        petta_gate,
+        "_petta_checks",
+        lambda _entries, **_kwargs: (set(), set()),
+    )
     accepted = tmp_path / "gated.metta"
     rejected = tmp_path / "rejected.jsonl"
     result = petta_gate.gate_emitted_facts(

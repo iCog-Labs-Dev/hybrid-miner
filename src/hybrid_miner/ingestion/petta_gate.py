@@ -1,14 +1,16 @@
-"""Check emitted assertion facts in PeTTa before making them mineable.
+"""Admit emitted assertion facts only when their PeTTa metadata is present.
 
-Python owns JSON/schema and source-text offset validation. This gate checks
-that each emitted fact has matching PeTTa evidence, predicate identity, entity
-types, and (for catalog predicates) allowed argument types. It never promotes
-an unverified fact into the mining graph.
+Document and ontology validation precede emission. This adapter checks
+provenance identity against the selected bundle, asks PeTTa for one admission
+decision per assertion, and never releases a partially admitted mining graph.
+It does not repeat predicate arity or argument-type validation, independently
+validate raw source text, or discover predicates.
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib.resources
 import json
 import re
 import shutil
@@ -24,7 +26,7 @@ from hybrid_miner.contracts.semantic_document import SemanticAssertion
 from hybrid_miner.emission import symbols
 from hybrid_miner.ontology import OntologyBundle
 
-_CHECK = re.compile(r"^\(GateCheck (?P<index>\d+) (?P<name>[a-z]\d*)\)$")
+_DECISION = re.compile(r"^\(Gate(?P<decision>Accepted|Quarantined) (?P<index>\d+)\)$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,7 +44,7 @@ class _Entry:
     raw_line: str
     fact: str
     evidence_id: str
-    checks: tuple[tuple[str, str], ...]
+    requirements: tuple[str, ...]
 
 
 def _entry(
@@ -65,8 +67,6 @@ def _entry(
         raise ValueError("evidence_id does not match document identity")
     signatures = {item.name: item for item in bundle.predicates}
     if assertion.predicate == "ProvisionalRelation":
-        if assertion.provisional_relation_id in signatures:
-            raise ValueError("provisional relation duplicates a catalog predicate")
         version = f"{bundle.bundle_id}@{bundle.bundle_version}"
         assert assertion.provisional_relation_id is not None
         relation = f"rel:{symbols.component(assertion.provisional_relation_id)}"
@@ -76,13 +76,6 @@ def _entry(
         if signature is None:
             raise ValueError(f"undeclared predicate {assertion.predicate!r}")
         version = signature.ontology_version
-        if len(assertion.arguments) != len(signature.argument_types):
-            raise ValueError("predicate arity does not match the ontology bundle")
-        for position, argument_type in enumerate(assertion.argument_types):
-            if argument_type not in signature.argument_types[position]:
-                raise ValueError(
-                    f"argument {position} type {argument_type!r} is not allowed"
-                )
         arguments = []
     if payload["ontology_version"] != version:
         raise ValueError("predicate ontology version does not match the bundle")
@@ -90,10 +83,6 @@ def _entry(
         raise ValueError("bundle_id does not match the selected bundle")
     if payload["bundle_version"] != bundle.bundle_version:
         raise ValueError("bundle_version does not match the selected bundle")
-    if any(
-        argument_type not in bundle.types for argument_type in assertion.argument_types
-    ):
-        raise ValueError("assertion uses an undeclared entity type")
     head = symbols.predicate_symbol(assertion.predicate, version)
     entities = [
         symbols.entity_symbol(corpus_id, document_id, argument)
@@ -104,65 +93,48 @@ def _entry(
     if payload["atom"] != fact:
         raise ValueError("fact does not match assertion and ontology identity")
 
-    checks = [
-        ("f", f"(match &facts {fact} (GateCheck {{index}} f))"),
-        (
-            "e",
-            f"(match &meta (AssertionEvidence {evidence_id} {fact} "
-            f"extracted-hypothesis {repr(assertion.confidence)}) "
-            "(GateCheck {index} e))",
-        ),
-    ]
+    requirements: list[str] = []
+
+    def require(space: str, atom: str) -> None:
+        kind = "fact" if space == "facts" else "meta"
+        requirements.append(f"({kind} {atom})")
+
+    require("facts", fact)
+    require(
+        "meta",
+        f"(AssertionEvidence {evidence_id} {fact} "
+        f"extracted-hypothesis {repr(assertion.confidence)})",
+    )
     if assertion.predicate == "ProvisionalRelation":
-        checks.append(
-            (
-                "p",
-                f"(match &meta (ProvisionalPredicate {head} {relation}) "
-                "(GateCheck {index} p))",
-            )
-        )
+        require("meta", f"(ProvisionalPredicate {head} {relation})")
     else:
-        checks.append(
-            (
-                "p",
-                f"(match &meta (PredicateIdentity {head} "
-                f"{symbols.component(assertion.predicate)} "
-                f"{symbols.component(version)}) (GateCheck {{index}} p))",
-            )
+        require(
+            "meta",
+            f"(PredicateIdentity {head} "
+            f"{symbols.component(assertion.predicate)} "
+            f"{symbols.component(version)})",
         )
     for position, (entity, argument_type) in enumerate(
         zip(entities, assertion.argument_types, strict=True)
     ):
         encoded_type = symbols.component(argument_type)
-        checks.append(
-            (
-                f"t{position}",
-                f"(match &meta (EntityType {entity} {encoded_type}) "
-                f"(GateCheck {{index}} t{position}))",
-            )
-        )
+        require("meta", f"(EntityType {entity} {encoded_type})")
         if assertion.predicate != "ProvisionalRelation":
-            checks.append(
-                (
-                    f"a{position}",
-                    f"(match &meta (AllowedType {head} {position} {encoded_type}) "
-                    f"(GateCheck {{index}} a{position}))",
-                )
+            require(
+                "meta",
+                f"(AllowedType {head} {position} {encoded_type})",
             )
-    for position, span in enumerate(assertion.source_spans):
-        checks.append(
-            (
-                f"s{position}",
-                f"(match &meta (SourceSpan {evidence_id} {span.start} "
-                f"{span.end}) (GateCheck {{index}} s{position}))",
-            )
+    for span in assertion.source_spans:
+        require(
+            "meta",
+            f"(SourceSpan {evidence_id} {span.start} {span.end})",
         )
     return _Entry(
         line_number=line_number,
         raw_line=raw_line,
         fact=fact,
         evidence_id=evidence_id,
-        checks=tuple(checks),
+        requirements=tuple(requirements),
     )
 
 
@@ -175,7 +147,7 @@ def _petta_checks(
     swipl: str,
     timeout_seconds: int,
     temporary_parent: Path,
-) -> set[tuple[int, str]]:
+) -> tuple[set[int], set[int]]:
     main = petta_root / "src" / "main.pl"
     if not main.is_file():
         raise FileNotFoundError(f"PeTTa entry point not found: {main}")
@@ -185,11 +157,32 @@ def _petta_checks(
         root = Path(temporary)
         shutil.copyfile(atoms_path, root / "facts.metta")
         shutil.copyfile(metadata_path, root / "meta.metta")
+        rule_source = importlib.resources.files("hybrid_miner.ingestion").joinpath(
+            "ingest_semantic_assertion.metta"
+        )
+        (root / "ingest_semantic_assertion.metta").write_bytes(rule_source.read_bytes())
         script = root / "gate.metta"
-        lines = ["!(import! &facts facts)", "!(import! &meta meta)"]
+        lines = [
+            "!(bind! &accepted (new-space))",
+            "!(bind! &quarantine (new-space))",
+            "!(import! &facts facts)",
+            "!(import! &meta meta)",
+            "!(import! &self ingest_semantic_assertion)",
+        ]
         for index, entry in enumerate(entries):
-            for _, expression in entry.checks:
-                lines.append(f"!{expression.format(index=index)}")
+            requirements = "()"
+            for requirement in reversed(entry.requirements):
+                requirements = f"(cons {requirement} {requirements})"
+            lines.append(
+                f"!(ingest-semantic-assertion {index} {entry.fact} {requirements})"
+            )
+        lines.extend(
+            [
+                "!(match &accepted (IngressAccepted $id $atom) (GateAccepted $id))",
+                "!(match &quarantine (IngressQuarantined $id $atom) "
+                "(GateQuarantined $id))",
+            ]
+        )
         script.write_text("\n".join(lines) + "\n", encoding="utf-8")
         result = subprocess.run(
             [
@@ -214,12 +207,21 @@ def _petta_checks(
             f"PeTTa ingress gate exited {result.returncode}: "
             f"{result.stderr.strip()}\n{result.stdout[-2000:]}"
         )
-    found: set[tuple[int, str]] = set()
+    accepted: set[int] = set()
+    quarantined: set[int] = set()
     for line in result.stdout.splitlines():
-        match = _CHECK.fullmatch(line.strip())
-        if match:
-            found.add((int(match.group("index")), match.group("name")))
-    return found
+        decision = _DECISION.fullmatch(line.strip())
+        if decision:
+            target = (
+                accepted if decision.group("decision") == "Accepted" else quarantined
+            )
+            target.add(int(decision.group("index")))
+    expected = set(range(len(entries)))
+    if accepted & quarantined or accepted | quarantined != expected:
+        raise RuntimeError(
+            "PeTTa did not produce exactly one ingress decision per assertion"
+        )
+    return accepted, quarantined
 
 
 def gate_emitted_facts(
@@ -286,7 +288,7 @@ def gate_emitted_facts(
         observed_facts.add(fact)
     accepted.parent.mkdir(parents=True, exist_ok=True)
     rejected.parent.mkdir(parents=True, exist_ok=True)
-    found = _petta_checks(
+    petta_accepted, petta_quarantined = _petta_checks(
         entries,
         atoms_path=atoms,
         metadata_path=metadata,
@@ -298,17 +300,21 @@ def gate_emitted_facts(
     accepted_facts: dict[str, None] = {}
     accepted_count = 0
     for index, entry in enumerate(entries):
-        missing = sorted(name for name, _ in entry.checks if (index, name) not in found)
-        if missing:
+        if index in petta_quarantined:
             failures.append(
                 {
                     "line_number": entry.line_number,
                     "evidence_id": entry.evidence_id,
-                    "error": f"PeTTa checks failed: {', '.join(missing)}",
+                    "error": (
+                        "PeTTa quarantined the assertion: emitted fact or "
+                        "required metadata is missing"
+                    ),
                     "raw_line": entry.raw_line,
                 }
             )
         else:
+            if index not in petta_accepted:
+                raise RuntimeError("PeTTa did not accept the assertion")
             accepted_facts[entry.fact] = None
             accepted_count += 1
     # Downstream exact-match audits require the documents, provenance, and

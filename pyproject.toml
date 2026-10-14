@@ -15,6 +15,9 @@ dev = ["black>=24.3", "mypy>=1.9", "pre-commit>=3.7", "pytest>=8", "ruff>=0.4"]
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"hybrid_miner.ingestion" = ["*.metta"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests/unit"]
 pythonpath = ["src"]
