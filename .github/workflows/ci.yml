@@ -39,9 +39,6 @@ jobs:
     name: PeTTa admission and mining
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    env:
-      PETTA_ROOT: ${{ runner.temp }}/petta
-      MINER_ROOT: ${{ github.workspace }}/hyperon-miner
     steps:
       - uses: actions/checkout@v7
         with:
@@ -59,6 +56,9 @@ jobs:
           sudo apt-get install -y swi-prolog-nox python3-scipy
           swipl --version
       - name: Check out pinned PeTTa runtime
+        env:
+          PETTA_ROOT: ${{ runner.temp }}/petta
+          MINER_ROOT: ${{ github.workspace }}/hyperon-miner
         run: |
           git clone --filter=blob:none https://github.com/trueagi-io/PeTTa.git "$PETTA_ROOT"
           git -C "$PETTA_ROOT" checkout ebdb51168135f7fdf68c59acf7521a1b85c19ba0
@@ -67,6 +67,9 @@ jobs:
       - name: Install hybrid-miner and test dependencies
         run: python -m pip install -e ".[dev]" scipy
       - name: Run pinned PeTTa integration check
+        env:
+          PETTA_ROOT: ${{ runner.temp }}/petta
+          MINER_ROOT: ${{ github.workspace }}/hyperon-miner
         run: python -m pytest tests/integration/test_petta_runtime.py -q --basetemp=runtime-artifacts
       - name: Preserve runtime artifacts on failure
         if: failure()
