@@ -33,13 +33,15 @@ Implemented:
   accepted graph to the miner; quarantine stops mining before support output.
 - Exact PeTTa binding recovery linked to validated source assertions, followed
   by construction of typed, source-linked candidate `PatternRecord` artifacts.
-- Unit tests, formatting/lint/type-check configuration, CI, and a pinned
-  upstream Git submodule.
+- Unit tests, a pinned-runtime integration check, formatting/lint/type-check
+  configuration, CI, and a pinned upstream Git submodule.
 
 Not implemented: production ontology catalog ownership, PeTTa-side
 source-text offset validation or full canonicalization, candidate scoring and
 Tier 2 promotion, non-myopic search, SVM/STLM control, or causal experiments.
-CI does not yet execute PeTTa.
+The separate CI runtime job executes PeTTa admission and Hyperon Miner on a
+small deterministic fixture. It does not assess parser extraction quality or
+benchmark mining performance.
 
 ## Repository layout
 
@@ -71,6 +73,8 @@ hybrid-miner/
 |       `-- build_pattern_records.py
 |-- tests/fixtures/
 |   `-- example-ontology-bundle.json
+|-- tests/integration/
+|   `-- test_petta_runtime.py
 |-- tests/unit/
 |   |-- test_semantic_document.py
 |   |-- test_pattern_record.py
@@ -103,8 +107,11 @@ tests; they are not present today.
   in `pyproject.toml`.
 - No model API, GPU, MORK, Redis, or Docker is required for contracts,
   ingestion, emission, or unit tests. Mining requires SWI-Prolog, the pinned
-  Hyperon Miner submodule, and a PeTTa checkout. The runtime exercised for
-  ingress and mining is revision `ebdb51168135f7fdf68c59acf7521a1b85c19ba0`.
+  Hyperon Miner submodule, and a PeTTa checkout. PeTTa requires SWI-Prolog
+  9.3 or newer and Python for Janus interoperability. The imported upstream
+  miner utility `boost_petta.py` also imports SciPy. The runtime exercised for
+  ingress and mining is PeTTa revision
+  `ebdb51168135f7fdf68c59acf7521a1b85c19ba0`.
 
 The `hyperon-miner/` submodule is pinned to
 `e955479bca1603597529d175cc22ac1583c67e15`. Mining requires this
@@ -128,8 +135,66 @@ python -m mypy src/hybrid_miner
 pre-commit install
 ```
 
-CI runs the unit tests, formatting, lint, type checks, and submodule-pin
-verification. It does not execute PeTTa or the upstream miner.
+CI runs unit tests, formatting, lint, type checks, and submodule-pin
+verification. A separate job also executes the pinned PeTTa runtime and
+Hyperon Miner against a deterministic two-document fixture: it requires
+admission and exact source-linked bindings, then verifies that removing
+metadata quarantines assertions and prevents mining. This check does not
+replace manual review of real parser output.
+
+### Reproducing the PeTTa runtime check
+
+Install SWI-Prolog 9.3 or newer and ensure `swipl` is on `PATH`. On Ubuntu,
+the [SWI-Prolog stable PPA](https://www.swi-prolog.org/build/PPA.html) provides
+the runtime used by CI:
+
+```sh
+sudo apt-get update
+sudo apt-get install -y software-properties-common
+sudo add-apt-repository -y ppa:swi-prolog/stable
+sudo apt-get update
+sudo apt-get install -y swi-prolog-nox python3-scipy
+```
+
+On Windows, install SWI-Prolog from its
+[official download page](https://www.swi-prolog.org/download/stable) and check
+`swipl --version` in PowerShell. Clone PeTTa from
+`https://github.com/trueagi-io/PeTTa.git` and check out the revision above; do
+not run this check against its moving default branch. From the hybrid-miner
+checkout, initialize the pinned Hyperon Miner submodule and install this
+package with development dependencies and SciPy:
+
+```sh
+git submodule update --init --recursive
+git clone https://github.com/trueagi-io/PeTTa.git ../PeTTa
+git -C ../PeTTa checkout ebdb51168135f7fdf68c59acf7521a1b85c19ba0
+python -m pip install -e ".[dev]" scipy
+swipl --version
+```
+
+On a POSIX shell, run the real-runtime integration check with explicit
+checkout paths:
+
+```sh
+PETTA_ROOT="$(cd ../PeTTa && pwd)" MINER_ROOT="$(pwd)/hyperon-miner" \
+  python -m pytest tests/integration/test_petta_runtime.py -q
+```
+
+On PowerShell, set the same paths before invoking pytest:
+
+```powershell
+$env:PETTA_ROOT = (Resolve-Path ..\PeTTa).Path
+$env:MINER_ROOT = (Resolve-Path .\hyperon-miner).Path
+python -m pytest tests/integration/test_petta_runtime.py -q
+```
+
+The expected result is one passing integration test. It runs Python ingestion
+and emission, executes the packaged admission rule in PeTTa, passes only the
+admitted graph to Hyperon Miner, recovers exact evidence bindings, and checks
+that missing metadata produces no support output. The test creates its
+intermediate files in pytest's temporary directory; it does not need an LLM,
+GPU, or production corpus. The commands below show how to run each stage on
+your own parser artifacts and inspect its outputs.
 
 ## Parser-document ingestion and PeTTa emission
 
