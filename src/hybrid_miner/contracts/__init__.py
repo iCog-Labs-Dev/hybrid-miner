@@ -4,7 +4,7 @@ from hybrid_miner.contracts.pattern_record import (
     PatternProvenance,
     PatternRecord,
     PatternRecordError,
-    validate_q1_pattern_record,
+    validate_extraction_pattern_record,
 )
 from hybrid_miner.contracts.pattern_record import (
     SourceSpan as PatternSourceSpan,
@@ -27,5 +27,5 @@ __all__ = [
     "PatternRecord",
     "PatternRecordError",
     "PatternSourceSpan",
-    "validate_q1_pattern_record",
+    "validate_extraction_pattern_record",
 ]

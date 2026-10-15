@@ -14,7 +14,7 @@ from hybrid_miner.contracts.pattern_record import (
     PatternProvenance,
     PatternRecord,
     SourceSpan,
-    validate_q1_pattern_record,
+    validate_extraction_pattern_record,
 )
 from hybrid_miner.contracts.semantic_document import SemanticDocument
 from hybrid_miner.emission.symbols import evidence_symbol, predicate_symbol
@@ -213,7 +213,7 @@ def _record(
         runtime_cost=None,
         status="candidate",
     )
-    return validate_q1_pattern_record(record)
+    return validate_extraction_pattern_record(record)
 
 
 def build_pattern_records(

@@ -275,8 +275,8 @@ class PatternRecord(_ContractModel):
         return cls.model_validate_json(payload)
 
 
-def validate_q1_pattern_record(record: PatternRecord) -> PatternRecord:
-    """Enforce extraction-first Q1 scope without restricting the future schema."""
+def validate_extraction_pattern_record(record: PatternRecord) -> PatternRecord:
+    """Restrict a candidate to the extraction-only mining stage."""
 
     violations: list[str] = []
     if record.semantic_level not in {"surface", "extracted"}:
@@ -286,19 +286,19 @@ def validate_q1_pattern_record(record: PatternRecord) -> PatternRecord:
     if record.derivation_or_definition is not None:
         violations.append("derivation_or_definition requires a later semantic stage")
     if not record.generator_history:
-        violations.append("generator_history is required for Q1 mined records")
+        violations.append("generator_history is required for extracted mined records")
     if record.provenance.miner_version is None:
-        violations.append("miner_version is required for Q1 mined records")
+        violations.append("miner_version is required for extracted mined records")
     if not record.cheap_features:
-        violations.append("cheap_features are required for Q1 mined records")
+        violations.append("cheap_features are required for extracted mined records")
     if record.controller_prediction is not None:
-        violations.append("controller_prediction is outside Q1 scope")
+        violations.append("controller_prediction is outside extraction-stage scope")
     if record.controller_uncertainty is not None:
-        violations.append("controller_uncertainty is outside Q1 scope")
+        violations.append("controller_uncertainty is outside extraction-stage scope")
     if record.causal_statistics is not None:
-        violations.append("causal_statistics are outside Q1 scope")
+        violations.append("causal_statistics are outside extraction-stage scope")
     if violations:
         raise PatternRecordError(
-            "Q1 PatternRecord violations: " + "; ".join(violations)
+            "Extraction-stage PatternRecord violations: " + "; ".join(violations)
         )
     return record
