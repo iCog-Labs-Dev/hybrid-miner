@@ -1,21 +1,21 @@
 # Hybrid Miner
 
 Hybrid Miner is an independent package for semantic-record validation and
-pattern mining. It will adapt the pinned `hyperon-miner` implementation and
-exchange validated artifacts with the Neuro-Symbolic-LLM project. It does not
+pattern mining. It executes a pinned `hyperon-miner` baseline and exchanges
+validated artifacts with the Neuro-Symbolic-LLM project. It does not
 run the frozen model, semantic parser, Tier 2 template store, or retrieval
 service.
 
-## Current status
+## Initial release scope
 
-Implemented:
+The initial release candidate covers an extraction-stage, depth-zero mining
+pipeline and its versioned parser-document interchange. Its capabilities are:
 
 - `SemanticDocument`: typed entities and extraction hypotheses, source
   spans, confidence, parser/ontology provenance, schema validation, and
   deterministic JSON serialization.
 - `PatternRecord`: candidate structure, source-linked provenance,
-  deterministic JSON serialization, and a validator that restricts records
-  to the current extraction-first stage.
+  deterministic JSON serialization, and an extraction-stage policy validator.
 - `OntologyBundle`: a caller-supplied, versioned JSON input that validates
   type and predicate signatures and checks `SemanticDocument` assertions.
 - JSONL ingestion: validates parser documents against the bundle and writes
@@ -27,8 +27,8 @@ Implemented:
   predicate declarations, entity types, allowed argument types, and recorded
   source spans. The rule places each assertion in an accepted or quarantined
   PeTTa space. A rejected assertion prevents release of a partial mining graph.
-- A depth-zero adapter that runs the pinned Hyperon Miner on the emitted fact
-  graph and records alpha-normalized exact support with runtime revisions.
+- A depth-zero adapter that runs the pinned Hyperon Miner on a supplied fact
+  graph and records alpha-normalized raw support with runtime revisions.
 - An admitted-support entry point that runs PeTTa ingress and passes only its
   accepted graph to the miner; quarantine stops mining before support output.
 - Exact PeTTa binding recovery linked to validated source assertions, followed
@@ -36,9 +36,10 @@ Implemented:
 - Unit tests, a pinned-runtime integration check, formatting/lint/type-check
   configuration, CI, and a pinned upstream Git submodule.
 
-Not implemented: production ontology catalog ownership, PeTTa-side
-source-text offset validation or full canonicalization, candidate scoring and
-Tier 2 promotion, non-myopic search, SVM/STLM control, or causal experiments.
+Later phases cover production ontology-catalog integration, PeTTa-side
+source-text offset validation and full canonicalization, candidate scoring,
+Tier 2 promotion, non-myopic search, SVM/STLM control, and causal experiments.
+Raw support is not a promoted template or a measure of neural utility.
 The separate CI runtime job executes PeTTa admission and Hyperon Miner on a
 small deterministic fixture. It does not assess parser extraction quality or
 benchmark mining performance.
@@ -250,7 +251,8 @@ Both exact-match outputs are audit artifacts, not promoted templates. The exact
 query has a per-run timeout and a 10,000-binding limit per candidate; throughput
 has not been established for large corpora. Record materialization rechecks each
 accepted binding against the source documents, fact graph, and provenance before
-constructing a validated Q1 `PatternRecord`. It stores the semantic relation
+constructing a validated extraction-stage `PatternRecord`. It stores the
+semantic relation
 names in `canonical_term`, and retains version-qualified identity separately in
 `ontology_groundings` and audit features. Every variable is exposed as an
 interface variable in this initial representation; existential projection and
@@ -265,14 +267,14 @@ record-level rejected output.
 from hybrid_miner.contracts import (
     PatternRecord,
     SemanticDocument,
-    validate_q1_pattern_record,
+    validate_extraction_pattern_record,
 )
 from hybrid_miner.ontology import OntologyBundle
 
 bundle = OntologyBundle.load_json("ontology-bundle.json")
 document = SemanticDocument.model_validate_json(document_json)
 bundle.validate_document(document)
-pattern = validate_q1_pattern_record(
+pattern = validate_extraction_pattern_record(
     PatternRecord.from_canonical_json(pattern_json)
 )
 document_artifact = document.canonical_json()
