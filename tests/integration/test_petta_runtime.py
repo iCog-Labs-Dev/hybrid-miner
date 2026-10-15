@@ -8,13 +8,14 @@ from pathlib import Path
 
 import pytest
 
-from hybrid_miner.contracts import SemanticDocument
+from hybrid_miner.contracts import PatternRecord, SemanticDocument
 from hybrid_miner.emission.emit_petta import emit_petta
 from hybrid_miner.ingestion import ingest_jsonl
 from hybrid_miner.mining.admitted_support import (
     AdmissionRejected,
     mine_admitted_support,
 )
+from hybrid_miner.mining.build_pattern_records import build_pattern_records
 from hybrid_miner.mining.exact_matches import recover_exact_matches
 from hybrid_miner.ontology import OntologyBundle
 
@@ -177,6 +178,56 @@ def test_real_petta_admission_mining_and_exact_bindings(tmp_path: Path) -> None:
         .splitlines()
     ]
     assert all("reuses a ground fact" in row["reason"] for row in rejected_rows)
+
+    patterns = tmp_path / "patterns.jsonl"
+    patterns_rejected = tmp_path / "patterns-rejected.jsonl"
+    counts = build_pattern_records(
+        bundle=bundle,
+        documents_path=accepted,
+        atoms_path=admitted,
+        provenance_path=provenance,
+        exact_path=exact,
+        output_path=patterns,
+        rejected_path=patterns_rejected,
+    )
+    assert counts == (1, 0)
+    record = PatternRecord.from_canonical_json(
+        patterns.read_text(encoding="utf-8").strip()
+    )
+    assert record.contract_version == "pattern-record-v1"
+    assert record.canonical_term == "(, (Agent $v0 $v1) (Event $v0))"
+    assert record.interface_variables == ("$v0", "$v1")
+    assert record.type_constraints == {"$v0": "Event", "$v1": "Entity"}
+    assert record.ontology_groundings == ("upper-v1:Agent", "upper-v1:Event")
+    assert record.provenance.source_document_ids == ("doc-1", "doc-2")
+    assert record.provenance.miner_version == run.mining.miner_revision
+    assert record.provenance.ontology_versions == ("upper-v1",)
+    assert {
+        (span.document_id, span.start, span.end) for span in record.source_spans
+    } == {
+        ("doc-1", 0, 9),
+        ("doc-1", 5, 9),
+        ("doc-2", 0, 9),
+        ("doc-2", 5, 9),
+    }
+    assert record.cheap_features == {"clause_count": 2, "variable_count": 2}
+    assert record.expensive_endpoint == {"observed_support": 2}
+    assert record.expensive_trace is not None
+    assert record.expensive_trace["petta_revision"] == run.mining.petta_revision
+    assert record.expensive_trace["graph_sha256"] == run.mining.graph_sha256
+    assert record.status == "candidate"
+
+    repeated_patterns = tmp_path / "patterns-repeat.jsonl"
+    assert build_pattern_records(
+        bundle=bundle,
+        documents_path=accepted,
+        atoms_path=admitted,
+        provenance_path=provenance,
+        exact_path=exact,
+        output_path=repeated_patterns,
+        rejected_path=tmp_path / "patterns-repeat-rejected.jsonl",
+    ) == (1, 0)
+    assert repeated_patterns.read_bytes() == patterns.read_bytes()
 
     missing_metadata = tmp_path / "missing-metadata.metta"
     missing_metadata.write_text("", encoding="utf-8")
