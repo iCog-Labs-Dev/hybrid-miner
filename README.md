@@ -290,10 +290,16 @@ downstream work. The semantic-document `SourceSpan` and pattern
 `PatternSourceSpan` are different types and have distinct package exports.
 
 `SemanticDocument` carries an explicit `semantic-document-v1` version.
-`PatternRecord` currently has no in-record schema version. Pin a released
-package revision or introduce a versioned envelope before downstream
-publication. Its local copy in Neuro-Symbolic-LLM is transitional and must
-be removed after compatibility and dependency pinning are verified.
+`PatternRecord` requires `pattern-record-v1`; unversioned and unsupported
+records are rejected. Downstream consumers must install a compatible released
+package rather than maintain an independent copy of the contract. Its local
+copy in Neuro-Symbolic-LLM is transitional and must be removed after
+compatibility and dependency pinning are verified. The extraction-stage builder
+populates `cheap_features` only from candidate structure available before exact
+evaluation and rejects exact-support keys in that feature map. Exact observed
+support is stored in `expensive_endpoint`, with a compact exact-evaluation
+summary and runtime provenance in `expensive_trace`. Neither is a valid input
+feature when training a controller to predict the exact endpoint.
 
 ## Component boundaries
 

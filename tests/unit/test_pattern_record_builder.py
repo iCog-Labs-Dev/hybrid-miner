@@ -123,10 +123,14 @@ def test_builds_typed_candidate_and_rejects_changed_evidence(tmp_path) -> None:
         evidence=evidence,
         graph_sha256=digest,
     )
+    assert record.contract_version == "pattern-record-v1"
     assert record.canonical_term == "(, (Agent $v0 $v1) (Event $v0))"
     assert record.ontology_groundings == ("upper-v1:Agent", "upper-v1:Event")
     assert record.type_constraints == {"$v0": "Event", "$v1": "Entity"}
-    assert record.cheap_features["support"] == 1
+    assert record.cheap_features == {"clause_count": 2, "variable_count": 2}
+    assert record.expensive_endpoint == {"observed_support": 1}
+    assert record.expensive_trace is not None
+    assert record.expensive_trace["factuality_counts"] == {"asserted": 2}
     assert record.status == "candidate"
 
     row["exact_bindings"][0]["evidence"][0]["source_spans"][0]["text"] = "wrong"

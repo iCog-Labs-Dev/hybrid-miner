@@ -170,6 +170,7 @@ def _record(
         f"{bundle.bundle_id}:{bundle.bundle_version}:{pattern}".encode()
     ).hexdigest()
     record = PatternRecord(
+        contract_version="pattern-record-v1",
         id=f"pattern-{identifier}",
         canonical_term=_canonical_term(clauses, bundle),
         interface_variables=variables,
@@ -196,17 +197,18 @@ def _record(
         ),
         generator_history=("hyperon-miner:depth-zero",),
         cheap_features={
-            "support": len(bindings),
             "clause_count": len(clauses),
+            "variable_count": len(variables),
+        },
+        cheap_endpoint=None,
+        expensive_endpoint={"observed_support": len(bindings)},
+        expensive_trace={
             "factuality_counts": factuality_counts,
             "minimum_parser_confidence": min(confidences),
             "qualified_pattern": pattern,
             "graph_sha256": row["graph_sha256"],
             "petta_revision": petta_revision,
         },
-        cheap_endpoint=None,
-        expensive_endpoint=None,
-        expensive_trace=None,
         controller_prediction=None,
         controller_uncertainty=None,
         causal_statistics=None,

@@ -98,6 +98,7 @@ def _validate_json_value(value: Any, context: str) -> Any:
 class PatternRecord(_ContractModel):
     """Storage-neutral canonical record for an extracted or mined pattern."""
 
+    contract_version: Literal["pattern-record-v1"]
     id: str
     canonical_term: str
     interface_variables: tuple[str, ...]
@@ -291,6 +292,17 @@ def validate_extraction_pattern_record(record: PatternRecord) -> PatternRecord:
         violations.append("miner_version is required for extracted mined records")
     if not record.cheap_features:
         violations.append("cheap_features are required for extracted mined records")
+    leaked_support = {
+        "support",
+        "reported_support",
+        "exact_support",
+        "observed_support",
+    } & set(record.cheap_features)
+    if leaked_support:
+        violations.append(
+            "exact support cannot be a cheap feature: "
+            + ", ".join(sorted(leaked_support))
+        )
     if record.controller_prediction is not None:
         violations.append("controller_prediction is outside extraction-stage scope")
     if record.controller_uncertainty is not None:

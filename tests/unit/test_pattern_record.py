@@ -14,6 +14,7 @@ from hybrid_miner.contracts.pattern_record import (
 
 def valid_record_data() -> dict[str, object]:
     return {
+        "contract_version": "pattern-record-v1",
         "id": "pattern-concession-001",
         "canonical_term": "(Concession $clause_0 $clause_1)",
         "interface_variables": ["$clause_0", "$clause_1"],
@@ -37,9 +38,9 @@ def valid_record_data() -> dict[str, object]:
             "experiment_version": "q1-s1-v1",
         },
         "generator_history": ["greedy:one-clause-seed"],
-        "cheap_features": {"support": 4, "clause_count": 1},
+        "cheap_features": {"clause_count": 1, "variable_count": 2},
         "cheap_endpoint": {"support_estimate": 4},
-        "expensive_endpoint": {"exact_support": 4},
+        "expensive_endpoint": {"observed_support": 4},
         "expensive_trace": {"bindings": 4},
         "controller_prediction": None,
         "controller_uncertainty": None,
@@ -65,7 +66,7 @@ def test_canonical_json_round_trip_is_deterministic() -> None:
         "$clause_1": "Clause",
         "$clause_0": "Clause",
     }
-    second_data["cheap_features"] = {"clause_count": 1, "support": 4}
+    second_data["cheap_features"] = {"variable_count": 2, "clause_count": 1}
 
     first = PatternRecord.model_validate(first_data)
     second = PatternRecord.model_validate(second_data)
@@ -73,6 +74,18 @@ def test_canonical_json_round_trip_is_deterministic() -> None:
 
     assert encoded == second.to_canonical_json()
     assert PatternRecord.from_canonical_json(encoded) == first
+
+
+@pytest.mark.parametrize("version", [None, "pattern-record-v2"])
+def test_requires_supported_contract_version(version: str | None) -> None:
+    data = valid_record_data()
+    if version is None:
+        del data["contract_version"]
+    else:
+        data["contract_version"] = version
+
+    with pytest.raises(ValidationError, match="contract_version"):
+        PatternRecord.model_validate(data)
 
 
 @pytest.mark.parametrize("confidence", [-0.01, 1.01, float("nan")])
@@ -163,6 +176,17 @@ def test_q1_policy_requires_mining_provenance_and_features() -> None:
     assert "generator_history" in message
     assert "miner_version" in message
     assert "cheap_features" in message
+
+
+def test_extraction_policy_rejects_exact_support_as_cheap_feature() -> None:
+    data = valid_record_data()
+    data["cheap_features"] = {"clause_count": 1, "observed_support": 4}
+    record = PatternRecord.model_validate(data)
+
+    with pytest.raises(
+        PatternRecordError, match="exact support cannot be a cheap feature"
+    ):
+        validate_extraction_pattern_record(record)
 
 
 def test_forbids_unknown_fields_and_top_level_mutation() -> None:
