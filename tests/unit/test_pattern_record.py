@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from hybrid_miner.contracts.pattern_record import (
     PatternRecord,
     PatternRecordError,
-    validate_q1_pattern_record,
+    validate_extraction_pattern_record,
 )
 
 
@@ -55,7 +55,7 @@ def test_accepts_q1_extracted_pattern() -> None:
     assert record.semantic_level == "extracted"
     assert record.source_spans[0].document_id == "doc-17"
     assert record.type_constraints["$clause_0"] == "Clause"
-    assert validate_q1_pattern_record(record) is record
+    assert validate_extraction_pattern_record(record) is record
 
 
 def test_canonical_json_round_trip_is_deterministic() -> None:
@@ -138,8 +138,10 @@ def test_q1_policy_rejects_later_stage_fields() -> None:
 
     record = PatternRecord.model_validate(data)
 
-    with pytest.raises(PatternRecordError, match="Q1 PatternRecord violations"):
-        validate_q1_pattern_record(record)
+    with pytest.raises(
+        PatternRecordError, match="Extraction-stage PatternRecord violations"
+    ):
+        validate_extraction_pattern_record(record)
 
 
 def test_q1_policy_requires_mining_provenance_and_features() -> None:
@@ -155,7 +157,7 @@ def test_q1_policy_requires_mining_provenance_and_features() -> None:
     record = PatternRecord.model_validate(data)
 
     with pytest.raises(PatternRecordError) as error:
-        validate_q1_pattern_record(record)
+        validate_extraction_pattern_record(record)
 
     message = str(error.value)
     assert "generator_history" in message
