@@ -1,4 +1,4 @@
-"""Run the pinned depth-zero PeTTa miner on an emitted fact graph."""
+"""Mine a standalone fact graph without requiring extraction artifacts."""
 
 from __future__ import annotations
 
@@ -12,8 +12,17 @@ from hybrid_miner.mining.petta_runner import mine_support, write_support_jsonl
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    arguments = argparse.ArgumentParser(prog="python -m hybrid_miner.mining")
-    arguments.add_argument("--atoms", type=Path, required=True)
+    arguments = argparse.ArgumentParser(
+        prog="python -m hybrid_miner.mining",
+        description=(
+            "Mine a standalone MeTTa fact graph using the pinned depth-zero "
+            "baseline (one conjunction expansion). No ontology bundle or "
+            "parser provenance is required; results do not attest semantic admission."
+        ),
+    )
+    arguments.add_argument(
+        "--atoms", type=Path, required=True, help="caller-prepared MeTTa fact graph"
+    )
     arguments.add_argument("--petta-root", type=Path, required=True)
     arguments.add_argument("--miner-root", type=Path, required=True)
     arguments.add_argument("--output", type=Path, required=True)

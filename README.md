@@ -1,15 +1,17 @@
 # Hybrid Miner
 
-Hybrid Miner is an independent package for semantic-record validation and
-pattern mining. It executes a pinned `hyperon-miner` baseline and exchanges
-validated artifacts with the Neuro-Symbolic-LLM project. It does not
+Hybrid Miner is an independent package for graph-pattern mining with an
+evidence-audited semantic-document ingestion path. It executes a pinned
+`hyperon-miner` baseline and can exchange validated artifacts with
+Neuro-Symbolic-LLM and other producers. It does not
 run the frozen model, semantic parser, Tier 2 template store, or retrieval
 service.
 
 ## Initial release scope
 
-The initial release candidate covers an extraction-stage, depth-zero mining
-pipeline and its versioned parser-document interchange. Its capabilities are:
+The initial release candidate covers standalone graph support mining and an
+extraction-stage, depth-zero pipeline with versioned parser-document
+interchange. Its capabilities are:
 
 - `SemanticDocument`: typed entities and extraction hypotheses, source
   spans, confidence, parser/ontology provenance, schema validation, and
@@ -36,7 +38,7 @@ pipeline and its versioned parser-document interchange. Its capabilities are:
 - Unit tests, a pinned-runtime integration check, formatting/lint/type-check
   configuration, CI, and a pinned upstream Git submodule.
 
-Later phases cover production ontology-catalog integration, PeTTa-side
+Later phases cover additional source adapters, PeTTa-side
 source-text offset validation and full canonicalization, candidate scoring,
 Tier 2 promotion, non-myopic search, SVM/STLM control, and causal experiments.
 Raw support is not a promoted template or a measure of neural utility.
@@ -138,7 +140,7 @@ pre-commit install
 
 CI runs unit tests, formatting, lint, type checks, and submodule-pin
 verification. A separate job also executes the pinned PeTTa runtime and
-Hyperon Miner against a deterministic two-document fixture: it requires
+Hyperon Miner against raw graph and two-document fixtures: it requires
 admission and exact source-linked bindings, then verifies that removing
 metadata quarantines assertions and prevents mining. This check does not
 replace manual review of real parser output.
@@ -178,7 +180,7 @@ checkout paths:
 
 ```sh
 PETTA_ROOT="$(cd ../PeTTa && pwd)" MINER_ROOT="$(pwd)/hyperon-miner" \
-  python -m pytest tests/integration/test_petta_runtime.py -q
+  python -m pytest tests/integration -q
 ```
 
 On PowerShell, set the same paths before invoking pytest:
@@ -186,16 +188,72 @@ On PowerShell, set the same paths before invoking pytest:
 ```powershell
 $env:PETTA_ROOT = (Resolve-Path ..\PeTTa).Path
 $env:MINER_ROOT = (Resolve-Path .\hyperon-miner).Path
-python -m pytest tests/integration/test_petta_runtime.py -q
+python -m pytest tests/integration -q
 ```
 
-The expected result is one passing integration test. It runs Python ingestion
+The expected result is two passing integration tests. The document check runs
+Python ingestion
 and emission, executes the packaged admission rule in PeTTa, passes only the
 admitted graph to Hyperon Miner, recovers exact evidence bindings, and checks
 that missing metadata produces no support output. The test creates its
 intermediate files in pytest's temporary directory; it does not need an LLM,
 GPU, or production corpus. The commands below show how to run each stage on
 your own parser artifacts and inspect its outputs.
+
+## Input interfaces
+
+| Interface | Required input | Output and guarantees |
+| --- | --- | --- |
+| Standalone graph mining (python -m hybrid_miner.mining) | Caller-prepared MeTTa facts and runtime checkout paths | Raw pattern binding counts and runtime identity; no extraction or ontology-admission claim |
+| Audited semantic mining (python -m hybrid_miner.mining.admitted_support) | Emitted facts, metadata, provenance, a supplied ontology bundle, and runtime paths | Admission-gated graph and raw support; rejected assertions prevent mining |
+| Source-evidence audit and record construction | Semantic documents, the same bundle, admitted facts, provenance, and matching support artifacts | Source-linked exact bindings and extraction-stage candidate records |
+
+`SemanticDocument` is the contract for character-span-grounded S1 text
+extraction, not the universal input type of the graph miner. Its model/prompt
+provenance, extraction status, and source spans are required only by that
+workflow. `OntologyBundle` validates caller-supplied definitions; the miner
+does not require any particular YAML catalog collection. Other graph producers
+can use the standalone interface without fabricating text, model identities,
+ontology versions, or character spans. They do not automatically gain the
+text-evidence auditing and extraction-stage record-building capabilities.
+
+### Standalone graph mining
+
+For example, save these database-derived facts as `purchases.metta`:
+
+~~~metta
+(Purchased buyer1 item1)
+(Product item1)
+(Purchased buyer2 item2)
+(Product item2)
+~~~
+
+Run the existing graph interface with the pinned runtime paths:
+
+~~~sh
+python -m hybrid_miner.mining --atoms purchases.metta --petta-root ../PeTTa --miner-root ./hyperon-miner --output purchases.support.jsonl --min-support 2
+~~~
+
+Inspect `purchases.support.jsonl` for the pattern
+`(, (Product $v0) (Purchased $v1 $v0))` with support 2. No ontology bundle,
+parser metadata, extraction status, or source spans are supplied. Other raw
+patterns may also be returned: binding counts alone do not establish distinct
+evidence, semantic correctness, or template utility. Use new output paths;
+existing artifacts are not overwritten.
+
+The runtime imports MeTTa code, not a sandboxed data format. Run only trusted
+graph files; the raw interface does not validate arbitrary programs as safe.
+
+### Search-depth baseline
+
+The adapter fixes the pinned upstream conjunction depth to zero with conjunction
+expansion enabled. Upstream's base case still expands each atomic candidate
+once, producing two-clause conjunctions. A greater depth recursively adds
+expansion steps; it is not a reasoning level and does not enable S2 or S3.
+This release does not expose a higher-depth search setting or claim discovery
+of longer conjunctions. Deeper search, search budgets, and guided/non-myopic
+generation require separate runtime verification and evaluation before they
+are added to the supported interface.
 
 ## Parser-document ingestion and PeTTa emission
 
@@ -206,7 +264,7 @@ From this repository's root:
 python -m hybrid_miner.ingestion --bundle bundle.json --input documents.jsonl --accepted-output accepted.jsonl --rejected-output rejected.jsonl
 python -m hybrid_miner.emission --bundle bundle.json --input accepted.jsonl --atoms-output facts.metta --metadata-output facts.metadata.metta --provenance-output facts.provenance.jsonl
 python -m hybrid_miner.mining.admitted_support --bundle bundle.json --emitted-atoms facts.metta --metadata facts.metadata.metta --provenance facts.provenance.jsonl --petta-root /path/to/PeTTa --miner-root ./hyperon-miner --admitted-output gated-facts.metta --quarantine-output gate-rejected.jsonl --support-output support.jsonl --min-support 2
-python -m hybrid_miner.mining.exact_matches --bundle bundle.json --documents accepted.jsonl --atoms gated-facts.metta --provenance facts.provenance.jsonl --support support.jsonl --petta-root /path/to/PeTTa --miner-root ./hyperon-miner --output exact-bindings.jsonl --rejected-output exact-rejected.jsonl
+python -m hybrid_miner.mining.exact_matches --bundle bundle.json --documents accepted.jsonl --atoms gated-facts.metta --provenance facts.provenance.jsonl --support support.jsonl --petta-root /path/to/PeTTa --miner-root ./hyperon-miner --min-support 2 --output exact-bindings.jsonl --rejected-output exact-rejected.jsonl
 python -m hybrid_miner.mining.build_pattern_records --bundle bundle.json --documents accepted.jsonl --atoms gated-facts.metta --provenance facts.provenance.jsonl --exact exact-bindings.jsonl --output pattern-records.jsonl --rejected-output pattern-records.rejected.jsonl
 ```
 
@@ -245,8 +303,16 @@ revisions. The exact-match audit then reruns each supported pattern in PeTTa,
 checks its reported count, grounds every binding against emitted facts, and
 joins each fact to validated document assertions and source spans. A mismatch
 between the graph, documents, bundle, support revision, and provenance aborts
-the run without output. Candidate-level failures, including a conjunction that
-reuses one ground fact or crosses source documents, go to the rejected output.
+the run without output. The audit records raw `reported_support` separately from
+`qualifying_support` under the `distinct-ground-facts-v1` selection policy.
+Bindings that reuse a ground fact across clauses are listed in `excluded_bindings`;
+other valid bindings of the same pattern are retained. Set `--min-support` on the
+exact-match command to require a minimum qualifying count (default: 1); use the
+same threshold as mining when comparing support-pruned candidates. Patterns below
+that threshold go to the rejected output. Other evidence failures, including a
+binding that crosses source documents, still reject the candidate. Support counts
+variable bindings, not distinct documents. Candidate `observed_support` uses the
+qualifying count, with the raw count and policy retained in its expensive trace.
 Both exact-match outputs are audit artifacts, not promoted templates. The exact
 query has a per-run timeout and a 10,000-binding limit per candidate; throughput
 has not been established for large corpora. Record materialization rechecks each
@@ -260,6 +326,13 @@ Tier 2 promotion require separate policies. These are candidate records, not
 embedded or indexed Tier 2 templates. A record that cannot be represented
 without conflicting variable types or source evidence is written to the
 record-level rejected output.
+
+Source-linked exact audit and candidate construction currently accept only
+grounded predicate heads declared in the supplied bundle. ProvisionalRelation
+facts remain in the emitted graph and evidence artifacts, but patterns using
+that wrapper or variable predicate heads are rejected by this candidate path.
+Their rejection is recorded; this release does not claim complete candidate
+coverage for provisional relations or arbitrary raw graphs.
 
 ## Contract use
 
@@ -320,14 +393,16 @@ Neuro-Symbolic-LLM Tier 2 promotion
 
 The repositories must exchange serialized artifacts or a pinned package,
 not import each other's working-tree files. The parser and miner must use
-the same versioned ontology bundle. Ownership of the ontology files
-currently held in Neuro-Symbolic-LLM is still being resolved with the
-parser team.
+the same versioned ontology bundle for the audited document workflow. The
+producer owns its ontology definitions and extraction policy; this package
+owns the accepted document/bundle formats and mining interfaces. Raw graph
+mining does not load the parser or require those artifacts.
 
 ## Implementation requirements
 
-- Validate ontology versions, predicate signatures, argument types, and
-  source spans before graph ingestion. Preserve rejected input for audit.
+- For semantic-document ingestion, validate ontology versions, predicate
+  signatures, argument types, and source spans before graph ingestion.
+  Preserve rejected input for audit.
 - Canonicalize accepted assertions into PeTTa without fabricating relations
   or discarding parser provenance.
 - Implement bounded, typed greedy expansion over extracted graphs. Record

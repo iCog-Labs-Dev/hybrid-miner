@@ -70,7 +70,7 @@ jobs:
         env:
           PETTA_ROOT: ${{ runner.temp }}/petta
           MINER_ROOT: ${{ github.workspace }}/hyperon-miner
-        run: python -m pytest tests/integration/test_petta_runtime.py -q --basetemp=runtime-artifacts
+        run: python -m pytest tests/integration/test_petta_runtime.py tests/integration/test_raw_graph_mining.py -q --basetemp=runtime-artifacts
       - name: Preserve runtime artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v4

@@ -1,4 +1,8 @@
-"""Execute Hyperon Miner's support-count baseline on a PeTTa fact graph."""
+"""Execute the support-count baseline on a caller-supplied PeTTa fact graph.
+
+This layer has no SemanticDocument, ontology-bundle, or extraction-provenance
+dependency. Semantic-document admission is provided by admitted_support.
+"""
 
 from __future__ import annotations
 
@@ -75,6 +79,8 @@ def _revision(root: Path) -> str:
 
 
 def _runner_source(miner_root: Path, atoms: Path, min_support: int) -> str:
+    # Upstream depth zero performs the base conjunction expansion (two clauses
+    # for atomic seeds). It is not a switch that disables conjunction mining.
     imports = [
         f"!(import! &self {(miner_root / module).as_posix()})"
         for module in _MINER_MODULES
@@ -100,7 +106,11 @@ def mine_support(
     swipl: str = "swipl",
     timeout_seconds: int = 120,
 ) -> MiningRun:
-    """Run the depth-zero upstream miner; do not invent missing candidates."""
+    """Mine an already prepared graph without asserting semantic admission.
+
+    The fixed upstream depth-zero baseline expands atomic seeds once. Results
+    are raw binding-support counts, not source-audited or promoted templates.
+    """
 
     if min_support < 1:
         raise ValueError("min_support must be positive")
