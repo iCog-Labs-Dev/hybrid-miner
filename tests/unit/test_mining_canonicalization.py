@@ -22,6 +22,13 @@ def test_preserves_distinct_variable_equalities() -> None:
     assert canonicalize_pattern(shared) != canonicalize_pattern(separate)
 
 
+def test_preserves_ontology_version_in_pattern_identity() -> None:
+    v1 = "(Agent@upper-v1 $event $entity)"
+    v2 = "(Agent@upper-v2 $event $entity)"
+
+    assert canonicalize_pattern(v1) != canonicalize_pattern(v2)
+
+
 @pytest.mark.parametrize("pattern", ["", "(Event@upper-v1 $x", "Event@upper-v1"])
 def test_rejects_incomplete_patterns(pattern: str) -> None:
     with pytest.raises(ValueError):

@@ -71,8 +71,36 @@ def _record(
         raise ValueError("exact-match bundle identity differs")
     if row.get("graph_sha256") != graph_sha256:
         raise ValueError("exact-match graph digest differs")
-    if row.get("reported_support") != len(bindings):
+    reported_support = row.get("reported_support")
+    qualifying_support = row.get("qualifying_support", reported_support)
+    if (
+        isinstance(qualifying_support, bool)
+        or not isinstance(qualifying_support, int)
+        or qualifying_support != len(bindings)
+    ):
         raise ValueError("exact-match support differs from binding count")
+    support_summary: dict[str, object] = {}
+    if "qualifying_support" in row:
+        excluded = row.get("excluded_bindings")
+        minimum_support = row.get("minimum_support")
+        if (
+            isinstance(reported_support, bool)
+            or not isinstance(reported_support, int)
+            or not isinstance(excluded, list)
+            or reported_support != qualifying_support + len(excluded)
+            or row.get("support_policy") != "distinct-ground-facts-v1"
+            or isinstance(minimum_support, bool)
+            or not isinstance(minimum_support, int)
+            or minimum_support < 1
+            or qualifying_support < minimum_support
+        ):
+            raise ValueError("exact-match support policy or accounting is invalid")
+        support_summary = {
+            "reported_support": reported_support,
+            "excluded_binding_count": len(excluded),
+            "support_policy": row["support_policy"],
+            "minimum_support": minimum_support,
+        }
     miner_revision = row.get("miner_revision")
     if not isinstance(miner_revision, str) or not miner_revision:
         raise ValueError("exact-match row lacks a miner revision")
@@ -203,6 +231,7 @@ def _record(
         cheap_endpoint=None,
         expensive_endpoint={"observed_support": len(bindings)},
         expensive_trace={
+            **support_summary,
             "factuality_counts": factuality_counts,
             "minimum_parser_confidence": min(confidences),
             "qualified_pattern": pattern,

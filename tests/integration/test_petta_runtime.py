@@ -167,6 +167,9 @@ def test_real_petta_admission_mining_and_exact_bindings(tmp_path: Path) -> None:
     rows = [json.loads(line) for line in exact.read_text(encoding="utf-8").splitlines()]
     assert rows[0]["pattern"] == "(, (Agent@upper-v1 $v0 $v1) (Event@upper-v1 $v0))"
     assert rows[0]["reported_support"] == 2
+    assert rows[0]["qualifying_support"] == 2
+    assert rows[0]["excluded_bindings"] == []
+    assert rows[0]["support_policy"] == "distinct-ground-facts-v1"
     assert {binding["document_id"] for binding in rows[0]["exact_bindings"]} == {
         "doc-1",
         "doc-2",
@@ -213,6 +216,8 @@ def test_real_petta_admission_mining_and_exact_bindings(tmp_path: Path) -> None:
     assert record.cheap_features == {"clause_count": 2, "variable_count": 2}
     assert record.expensive_endpoint == {"observed_support": 2}
     assert record.expensive_trace is not None
+    assert record.expensive_trace["reported_support"] == 2
+    assert record.expensive_trace["excluded_binding_count"] == 0
     assert record.expensive_trace["petta_revision"] == run.mining.petta_revision
     assert record.expensive_trace["graph_sha256"] == run.mining.graph_sha256
     assert record.status == "candidate"

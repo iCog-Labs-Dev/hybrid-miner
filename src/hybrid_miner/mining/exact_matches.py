@@ -1,7 +1,7 @@
 """Recover exact PeTTa bindings and source evidence for mined support records.
 
-This audit artifact is not a promoted PatternRecord. A candidate is rejected
-when reported support cannot be reconstructed without reusing a ground fact.
+This audit artifact is not a promoted PatternRecord. Raw matching support is
+verified separately from support under the distinct-ground-facts policy.
 """
 
 from __future__ import annotations
@@ -40,6 +40,11 @@ from hybrid_miner.ontology import OntologyBundle
 
 _MARKER = "CandidateBinding"
 _MAX_BINDINGS = 10_000
+_SUPPORT_POLICY = "distinct-ground-facts-v1"
+
+
+class _ReusedGroundFact(ValueError):
+    """A valid conjunction binding fails the distinct-ground-facts policy."""
 
 
 class _ArtifactModel(BaseModel):
@@ -287,14 +292,14 @@ def _linked_binding(
         render_expression(tuple(bindings.get(part, part) for part in clause))
         for clause in clauses
     )
-    if len(set(grounded)) != len(grounded):
-        raise ValueError("one binding reuses a ground fact across clauses")
     if any(atom not in facts for atom in grounded):
         raise ValueError("PeTTa binding does not resolve to emitted facts")
     rows = [row for atom in grounded for row in evidence[atom]]
     identities = {(row.corpus_id, row.document_id) for row in rows}
     if len(identities) != 1:
         raise ValueError("one binding crosses source documents")
+    if len(set(grounded)) != len(grounded):
+        raise _ReusedGroundFact("one binding reuses a ground fact across clauses")
     linked = []
     for row in rows:
         document = documents[(row.corpus_id, row.document_id)]
@@ -340,6 +345,7 @@ def recover_exact_matches(
     rejected_path: Path,
     swipl: str = "swipl",
     timeout_seconds: int = 120,
+    min_support: int = 1,
 ) -> tuple[int, int]:
     """Validate artifacts, query PeTTa, and write accepted/rejected bindings."""
 
@@ -351,6 +357,12 @@ def recover_exact_matches(
         raise FileExistsError("exact-match output already exists")
     if timeout_seconds < 1:
         raise ValueError("timeout_seconds must be positive")
+    if (
+        isinstance(min_support, bool)
+        or not isinstance(min_support, int)
+        or min_support < 1
+    ):
+        raise ValueError("min_support must be a positive integer")
     facts = _facts(atoms_path)
     documents = _documents(documents_path, bundle)
     evidence = _evidence_index(provenance_path, facts, documents, bundle)
@@ -400,29 +412,48 @@ def recover_exact_matches(
     for index, (pattern, variables) in patterns.items():
         record = support[index]
         raw = queried.get(index, [])
+        linked: list[dict[str, object]] = []
+        excluded: list[dict[str, object]] = []
         try:
             if len(raw) != record.support or len(set(raw)) != len(raw):
                 raise ValueError(
                     f"reported support {record.support} disagrees with "
                     f"{len(raw)} distinct exact PeTTa bindings"
                 )
-            linked = [
-                _linked_binding(
-                    clauses_by_index[index],
-                    variables,
-                    values,
-                    facts=facts,
-                    evidence=evidence,
-                    documents=documents,
+            for values in raw:
+                try:
+                    linked.append(
+                        _linked_binding(
+                            clauses_by_index[index],
+                            variables,
+                            values,
+                            facts=facts,
+                            evidence=evidence,
+                            documents=documents,
+                        )
+                    )
+                except _ReusedGroundFact as error:
+                    excluded.append(
+                        {
+                            "variables": dict(zip(variables, values, strict=True)),
+                            "reason": str(error),
+                        }
+                    )
+            if len(linked) < min_support:
+                raise ValueError(
+                    f"qualifying support {len(linked)} is below minimum {min_support}; "
+                    "a binding that reuses a ground fact is excluded"
                 )
-                for values in raw
-            ]
         except ValueError as error:
             rejected.append(
                 {
                     "pattern": pattern,
                     "reported_support": record.support,
                     "reason": str(error),
+                    "qualifying_support": len(linked),
+                    "excluded_bindings": excluded,
+                    "support_policy": _SUPPORT_POLICY,
+                    "minimum_support": min_support,
                 }
             )
             continue
@@ -430,6 +461,10 @@ def recover_exact_matches(
             {
                 "pattern": pattern,
                 "reported_support": record.support,
+                "qualifying_support": len(linked),
+                "excluded_bindings": excluded,
+                "support_policy": _SUPPORT_POLICY,
+                "minimum_support": min_support,
                 "exact_bindings": linked,
                 "graph_sha256": graph_sha256,
                 "petta_revision": petta_revision,
@@ -481,6 +516,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     ):
         arguments.add_argument(f"--{name}", type=Path, required=True)
     arguments.add_argument("--swipl", default="swipl")
+    arguments.add_argument(
+        "--min-support",
+        type=int,
+        default=1,
+        help="minimum distinct-fact bindings after filtering (default: 1)",
+    )
     options = arguments.parse_args(argv)
     try:
         accepted, rejected = recover_exact_matches(
@@ -494,6 +535,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             output_path=options.output,
             rejected_path=options.rejected_output,
             swipl=options.swipl,
+            min_support=options.min_support,
         )
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         print(f"error: {error}", file=sys.stderr)

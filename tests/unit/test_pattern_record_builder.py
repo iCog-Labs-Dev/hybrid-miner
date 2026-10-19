@@ -133,6 +133,36 @@ def test_builds_typed_candidate_and_rejects_changed_evidence(tmp_path) -> None:
     assert record.expensive_trace["factuality_counts"] == {"asserted": 2}
     assert record.status == "candidate"
 
+    filtered = dict(
+        row,
+        reported_support=3,
+        qualifying_support=1,
+        excluded_bindings=[{}, {}],
+        minimum_support=1,
+        support_policy="distinct-ground-facts-v1",
+    )
+    filtered_record = _record(
+        filtered,
+        bundle=bundle,
+        facts=facts,
+        documents=documents,
+        evidence=evidence,
+        graph_sha256=digest,
+    )
+    assert filtered_record.expensive_endpoint == {"observed_support": 1}
+    assert filtered_record.expensive_trace["reported_support"] == 3
+    assert filtered_record.expensive_trace["excluded_binding_count"] == 2
+    filtered["qualifying_support"] = 2
+    with pytest.raises(ValueError, match="support differs from binding count"):
+        _record(
+            filtered,
+            bundle=bundle,
+            facts=facts,
+            documents=documents,
+            evidence=evidence,
+            graph_sha256=digest,
+        )
+
     row["exact_bindings"][0]["evidence"][0]["source_spans"][0]["text"] = "wrong"
     with pytest.raises(ValueError, match="disagrees with source evidence"):
         _record(
