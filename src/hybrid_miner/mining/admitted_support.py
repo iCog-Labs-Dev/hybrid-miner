@@ -19,7 +19,7 @@ from hybrid_miner.ontology import OntologyBundle
 
 
 class AdmissionRejected(ValueError):
-    """The gate quarantined assertions; no mining run was started."""
+    """No graph survived admission; no mining run was started."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +32,7 @@ class AdmittedSupportRun:
 def mine_admitted_support(
     *,
     bundle: OntologyBundle,
+    documents_path: str | Path,
     emitted_atoms_path: str | Path,
     metadata_path: str | Path,
     provenance_path: str | Path,
@@ -40,6 +41,7 @@ def mine_admitted_support(
     admitted_atoms_path: str | Path,
     quarantine_path: str | Path,
     support_path: str | Path,
+    admission_path: str | Path | None = None,
     min_support: int = 2,
     swipl: str = "swipl",
     timeout_seconds: int = 120,
@@ -50,22 +52,37 @@ def mine_admitted_support(
     available separately for standalone use of hybrid-miner.
     """
 
+    manifest = (
+        Path(admission_path)
+        if admission_path is not None
+        else Path(admitted_atoms_path).with_suffix(".admission.json")
+    )
     paths = (
+        documents_path,
         emitted_atoms_path,
         metadata_path,
         provenance_path,
         admitted_atoms_path,
         quarantine_path,
         support_path,
+        manifest,
     )
     if len({Path(path).resolve() for path in paths}) != len(paths):
         raise ValueError("integrated mining input and output paths must differ")
     output = Path(support_path)
     if output.exists():
         raise FileExistsError(f"support output already exists: {output}")
+    if (
+        isinstance(min_support, bool)
+        or not isinstance(min_support, int)
+        or min_support < 1
+    ):
+        raise ValueError("min_support must be a positive integer")
 
     admission = gate_emitted_facts(
         bundle=bundle,
+        documents_path=documents_path,
+        admission_path=manifest,
         atoms_path=emitted_atoms_path,
         metadata_path=metadata_path,
         provenance_path=provenance_path,
@@ -75,13 +92,11 @@ def mine_admitted_support(
         swipl=swipl,
         timeout_seconds=timeout_seconds,
     )
-    if admission.rejected:
-        raise AdmissionRejected(
-            f"PeTTa quarantined {admission.rejected} assertion(s); "
-            f"mining did not start. Inspect {admission.rejected_path}"
-        )
     if not admission.facts:
-        raise AdmissionRejected("PeTTa admitted no facts; mining did not start")
+        raise AdmissionRejected(
+            f"PeTTa admitted no facts; mining did not start. "
+            f"Inspect {admission.rejected_path}"
+        )
 
     mining = mine_support(
         atoms_path=admission.atoms_path,
@@ -99,6 +114,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         prog="python -m hybrid_miner.mining.admitted_support"
     )
     parser.add_argument("--bundle", type=Path, required=True)
+    parser.add_argument("--documents", type=Path, required=True)
+    parser.add_argument("--admission-output", type=Path)
     parser.add_argument("--emitted-atoms", type=Path, required=True)
     parser.add_argument("--metadata", type=Path, required=True)
     parser.add_argument("--provenance", type=Path, required=True)
@@ -113,6 +130,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         result = mine_admitted_support(
             bundle=OntologyBundle.load_json(options.bundle),
+            documents_path=options.documents,
+            admission_path=options.admission_output,
             emitted_atoms_path=options.emitted_atoms,
             metadata_path=options.metadata,
             provenance_path=options.provenance,
@@ -131,10 +150,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"error: {error}", file=sys.stderr)
         return 1
     print(
-        f"PeTTa admitted: {result.admission.accepted} assertions, "
+        f"PeTTa admitted: {result.admission.accepted} evidence entries, "
         f"{result.admission.facts} facts -> {result.admission.atoms_path}"
     )
     print(f"Support records: {len(result.mining.records)} -> {result.support_path}")
+    print(
+        f"Documents: {result.admission.accepted_documents} accepted, "
+        f"{result.admission.rejected_documents} quarantined"
+    )
+    print(f"Admission selection: {result.admission.admission_path}")
     print(f"Graph SHA-256: {result.mining.graph_sha256}")
     return 0
 
