@@ -341,12 +341,22 @@ the run without output. The audit records raw `reported_support` separately from
 `qualifying_support` under the `distinct-ground-facts-v1` selection policy.
 Bindings that reuse a ground fact across clauses are listed in `excluded_bindings`;
 other valid bindings of the same pattern are retained. Set `--min-support` on the
-exact-match command to require a minimum qualifying count (default: 1); use the
-same threshold as mining when comparing support-pruned candidates. Patterns below
+exact-match command to require a minimum qualifying count (default: 2, matching
+the mining default). When overriding the mining threshold, explicitly pass the
+same threshold to exact matching; it is not automatically propagated. Patterns below
 that threshold go to the rejected output. Other evidence failures, including a
 binding that crosses source documents, still reject the candidate. Support counts
 variable bindings, not distinct documents. Candidate `observed_support` uses the
 qualifying count, with the raw count and policy retained in its expensive trace.
+Several source assertions may support the same grounded fact. Exact evidence
+keeps each occurrence linked by its `atom`; record construction associates all
+of them with the corresponding grounded clause and preserves their spans and
+confidences. Additional evidence occurrences do not increase binding support.
+Pattern IDs hash the compact UTF-8 JSON array
+`["pattern-id-v1", bundle_id, bundle_version, qualified_pattern]`, so delimiters
+inside identifiers cannot make different identity tuples collide. This replaces
+the unreleased delimiter-concatenated IDs; regenerate earlier candidate artifacts
+before comparing IDs. It does not change the semantic display or mining support.
 Both exact-match outputs are audit artifacts, not promoted templates. The exact
 query has a per-run timeout and a 10,000-binding limit per candidate; throughput
 has not been established for large corpora. Record materialization rechecks each
