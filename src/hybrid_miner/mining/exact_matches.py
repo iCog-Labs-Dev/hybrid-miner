@@ -16,6 +16,7 @@ from collections import defaultdict
 from collections.abc import Sequence
 from contextlib import ExitStack
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -23,6 +24,12 @@ from hybrid_miner.contracts.semantic_document import (
     ParserProvenance,
     SemanticAssertion,
     SemanticDocument,
+    SemanticRule,
+)
+from hybrid_miner.emission.semantic_rules import (
+    document_rule_graph,
+    rule_part,
+    rule_source,
 )
 from hybrid_miner.emission.symbols import (
     component,
@@ -30,12 +37,19 @@ from hybrid_miner.emission.symbols import (
     evidence_symbol,
     predicate_symbol,
 )
+from hybrid_miner.ingestion.admission import (
+    DocumentKey,
+    document_key,
+    document_records,
+    excluded_documents,
+)
 from hybrid_miner.mining.canonicalize_patterns import (
     Expression,
     canonicalize_pattern,
     parse_expression,
     render_expression,
 )
+from hybrid_miner.mining.pattern_predicates import pattern_predicates
 from hybrid_miner.ontology import OntologyBundle
 
 _MARKER = "CandidateBinding"
@@ -70,6 +84,25 @@ class _Evidence(_ArtifactModel):
     ontology_version: str
     parser: ParserProvenance
     assertion: SemanticAssertion
+
+
+class _RuleEvidence(_ArtifactModel):
+    kind: Literal["rule"]
+    atom: str
+    rule_index: int = Field(strict=True, ge=0)
+    fact_index: int = Field(strict=True, ge=0)
+    evidence_id: str
+    bundle_id: str
+    bundle_version: str
+    corpus_id: str
+    document_id: str
+    ontology_version: str
+    parser: ParserProvenance
+    rule: SemanticRule
+    entity_types: dict[str, str]
+
+
+EvidenceEntry = _Evidence | _RuleEvidence
 
 
 def _revision(root: Path) -> str:
@@ -109,14 +142,13 @@ def _facts(path: Path) -> set[str]:
 
 
 def _documents(
-    path: Path, bundle: OntologyBundle
+    path: Path, bundle: OntologyBundle, excluded: set[DocumentKey] | None = None
 ) -> dict[tuple[str, str], SemanticDocument]:
     documents: dict[tuple[str, str], SemanticDocument] = {}
-    for number, line in enumerate(_json_lines(path), start=1):
+    for key, line in document_records(path).items():
+        if excluded is not None and key in excluded:
+            continue
         document = bundle.validate_document(SemanticDocument.model_validate_json(line))
-        key = (document.corpus_id, document.document_id)
-        if key in documents:
-            raise ValueError(f"duplicate document on line {number}: {key}")
         documents[key] = document
     return documents
 
@@ -146,14 +178,46 @@ def _evidence_index(
     facts: set[str],
     documents: dict[tuple[str, str], SemanticDocument],
     bundle: OntologyBundle,
-) -> dict[str, tuple[_Evidence, ...]]:
+    excluded: set[DocumentKey] | None = None,
+) -> dict[str, tuple[EvidenceEntry, ...]]:
     versions = {item.name: item.ontology_version for item in bundle.predicates}
-    indexed: dict[str, list[_Evidence]] = defaultdict(list)
-    seen: set[tuple[str, str, int]] = set()
+    indexed: dict[str, list[EvidenceEntry]] = defaultdict(list)
+    seen: set[tuple[str, str, str, int, int]] = set()
     for number, line in enumerate(_json_lines(path), start=1):
+        payload = json.loads(line)
+        if not isinstance(payload, dict):
+            raise ValueError(f"provenance line {number} is not an object")
+        if excluded is not None and document_key(payload) in excluded:
+            continue
+        if payload.get("kind") == "rule":
+            rule_row = _RuleEvidence.model_validate_json(line)
+            document = documents.get((rule_row.corpus_id, rule_row.document_id))
+            key = (
+                rule_row.corpus_id,
+                rule_row.document_id,
+                "rule",
+                rule_row.rule_index,
+                rule_row.fact_index,
+            )
+            if document is None or rule_row.rule_index >= len(document.rules):
+                raise ValueError(f"rule provenance line {number} has no source rule")
+            parts = document_rule_graph(document, bundle, rule_row.rule_index)
+            if (
+                rule_row.fact_index >= len(parts)
+                or rule_row.model_dump(mode="json")
+                != parts[rule_row.fact_index].evidence
+                or rule_row.atom not in facts
+                or key in seen
+            ):
+                raise ValueError(
+                    f"rule provenance line {number} disagrees with validated inputs"
+                )
+            indexed[rule_row.atom].append(rule_row)
+            seen.add(key)
+            continue
         row = _Evidence.model_validate_json(line)
         identity = (row.corpus_id, row.document_id)
-        key = (*identity, row.assertion_index)
+        key = (*identity, "assertion", row.assertion_index, 0)
         document = documents.get(identity)
         if (
             row.bundle_id != bundle.bundle_id
@@ -174,10 +238,16 @@ def _evidence_index(
         indexed[row.atom].append(row)
         seen.add(key)
     expected = {
-        (doc.corpus_id, doc.document_id, index)
+        (doc.corpus_id, doc.document_id, "assertion", index, 0)
         for doc in documents.values()
         for index in range(len(doc.assertions))
     }
+    expected.update(
+        (doc.corpus_id, doc.document_id, "rule", index, part)
+        for doc in documents.values()
+        for index in range(len(doc.rules))
+        for part in range(len(document_rule_graph(doc, bundle, index)))
+    )
     if seen != expected or set(indexed) != facts:
         raise ValueError("facts, provenance, and document assertions do not agree")
     return {atom: tuple(rows) for atom, rows in indexed.items()}
@@ -192,9 +262,7 @@ def _pattern_clauses(
     raw_clauses: tuple[Expression, ...] = (
         expression[1:] if expression[0] == "," else (expression,)
     )
-    allowed_heads = {
-        predicate_symbol(item.name, item.ontology_version) for item in bundle.predicates
-    }
+    allowed_heads = pattern_predicates(bundle)
     clauses: list[tuple[str, ...]] = []
     variables: list[str] = []
     for clause in raw_clauses:
@@ -206,6 +274,7 @@ def _pattern_clauses(
         ):
             raise ValueError("pattern has an unsupported or ungrounded predicate")
         flat = tuple(item for item in clause if isinstance(item, str))
+        allowed_heads[flat[0]].validate_clause(flat, bundle)
         clauses.append(flat)
         for token in flat[1:]:
             if token.startswith("$") and token not in variables:
@@ -284,7 +353,7 @@ def _linked_binding(
     values: tuple[str, ...],
     *,
     facts: set[str],
-    evidence: dict[str, tuple[_Evidence, ...]],
+    evidence: dict[str, tuple[EvidenceEntry, ...]],
     documents: dict[tuple[str, str], SemanticDocument],
 ) -> dict[str, object]:
     bindings = dict(zip(variables, values, strict=True))
@@ -303,11 +372,43 @@ def _linked_binding(
     linked = []
     for row in rows:
         document = documents[(row.corpus_id, row.document_id)]
+        if isinstance(row, _RuleEvidence):
+            name, _ = rule_part(row.rule, row.fact_index)
+            spans, confidence = rule_source(row.rule, row.fact_index)
+            linked.append(
+                {
+                    "kind": "rule",
+                    "evidence_id": row.evidence_id,
+                    "atom": row.atom,
+                    "predicate": name,
+                    "ontology_version": row.ontology_version,
+                    "rule_id": row.rule.id,
+                    "rule_index": row.rule_index,
+                    "fact_index": row.fact_index,
+                    "status": row.rule.status,
+                    "factuality": "hypothetical",
+                    "confidence": confidence,
+                    "source_spans": [
+                        {
+                            "start": span.start,
+                            "end": span.end,
+                            "text": document.source_text[span.start : span.end],
+                        }
+                        for span in spans
+                    ],
+                }
+            )
+            continue
         linked.append(
             {
                 "evidence_id": row.evidence_id,
                 "atom": row.atom,
                 "predicate": row.assertion.predicate,
+                **(
+                    {"provisional_relation_id": row.assertion.provisional_relation_id}
+                    if row.assertion.predicate == "ProvisionalRelation"
+                    else {}
+                ),
                 "ontology_version": row.ontology_version,
                 "status": row.assertion.status,
                 "factuality": row.assertion.factuality,
@@ -343,15 +444,25 @@ def recover_exact_matches(
     miner_root: Path,
     output_path: Path,
     rejected_path: Path,
+    admission_path: Path | None = None,
     swipl: str = "swipl",
     timeout_seconds: int = 120,
     min_support: int = 1,
 ) -> tuple[int, int]:
     """Validate artifacts, query PeTTa, and write accepted/rejected bindings."""
 
-    inputs = (documents_path, atoms_path, provenance_path, support_path)
+    inputs: tuple[Path, ...] = (
+        documents_path,
+        atoms_path,
+        provenance_path,
+        support_path,
+    )
+    if admission_path is not None:
+        inputs += (admission_path,)
     outputs = (output_path, rejected_path)
-    if len({path.resolve() for path in (*inputs, *outputs)}) != 6:
+    if len({path.resolve() for path in (*inputs, *outputs)}) != len(inputs) + len(
+        outputs
+    ):
         raise ValueError("input and output paths must all differ")
     if any(path.exists() for path in outputs):
         raise FileExistsError("exact-match output already exists")
@@ -364,8 +475,15 @@ def recover_exact_matches(
     ):
         raise ValueError("min_support must be a positive integer")
     facts = _facts(atoms_path)
-    documents = _documents(documents_path, bundle)
-    evidence = _evidence_index(provenance_path, facts, documents, bundle)
+    quarantined = excluded_documents(
+        admission_path,
+        bundle=bundle,
+        documents_path=documents_path,
+        provenance_path=provenance_path,
+        atoms_path=atoms_path,
+    )
+    documents = _documents(documents_path, bundle, quarantined)
+    evidence = _evidence_index(provenance_path, facts, documents, bundle, quarantined)
     graph_sha256 = hashlib.sha256(atoms_path.read_bytes()).hexdigest()
     petta_revision = _revision(petta_root)
     miner_revision = _revision(miner_root)
@@ -516,6 +634,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ):
         arguments.add_argument(f"--{name}", type=Path, required=True)
     arguments.add_argument("--swipl", default="swipl")
+    arguments.add_argument("--admission", type=Path)
     arguments.add_argument(
         "--min-support",
         type=int,
@@ -534,6 +653,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             miner_root=options.miner_root,
             output_path=options.output,
             rejected_path=options.rejected_output,
+            admission_path=options.admission,
             swipl=options.swipl,
             min_support=options.min_support,
         )

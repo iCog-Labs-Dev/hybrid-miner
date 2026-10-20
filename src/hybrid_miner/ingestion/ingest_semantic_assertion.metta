@@ -10,6 +10,8 @@
    (ingress-present? &facts $atom))
 (= (ingress-requirement-valid? (meta $atom))
    (ingress-present? &meta $atom))
+(= (ingress-requirement-valid? (schema $atom))
+   (ingress-present? &schema $atom))
 
 (= (ingress-all-valid? ()) True)
 (= (ingress-all-valid? (cons $requirement $rest))
