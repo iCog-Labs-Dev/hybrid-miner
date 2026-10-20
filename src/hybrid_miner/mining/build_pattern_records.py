@@ -46,6 +46,16 @@ from hybrid_miner.mining.pattern_predicates import (
 from hybrid_miner.ontology import OntologyBundle
 
 
+def _pattern_id(bundle: OntologyBundle, pattern: str) -> str:
+    """Hash explicit identity fields without delimiter ambiguity."""
+    payload = json.dumps(
+        ["pattern-id-v1", bundle.bundle_id, bundle.bundle_version, pattern],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return f"pattern-{hashlib.sha256(payload.encode('utf-8')).hexdigest()}"
+
+
 def _canonical_term(
     clauses: tuple[tuple[str, ...], ...], bundle: OntologyBundle
 ) -> str:
@@ -162,8 +172,20 @@ def _record(
         if json.dumps(recovered, sort_keys=True) != json.dumps(binding, sort_keys=True):
             raise ValueError("exact binding disagrees with source evidence")
         linked = recovered["evidence"]
-        if not isinstance(linked, list) or len(linked) != len(clauses):
-            raise ValueError("one clause has ambiguous source evidence")
+        if not isinstance(linked, list):
+            raise ValueError("exact evidence must be a list")
+        clauses_by_atom = {
+            render_expression(tuple(values.get(part, part) for part in clause)): (
+                clause_index,
+                clause,
+            )
+            for clause_index, clause in enumerate(clauses)
+        }
+        if any(
+            not isinstance(item, dict) or not isinstance(item.get("atom"), str)
+            for item in linked
+        ) or {item["atom"] for item in linked} != set(clauses_by_atom):
+            raise ValueError("exact evidence does not cover the grounded clauses")
         corpus_id = recovered["corpus_id"]
         document_id = recovered["document_id"]
         if not isinstance(corpus_id, str) or not isinstance(document_id, str):
@@ -173,11 +195,13 @@ def _record(
         source_ids.add(document_id)
         parser_versions.add(document.parser.parser_version)
         model_revisions.add(document.parser.model_revision)
-        for clause_index, (clause, linked_row) in enumerate(
-            zip(clauses, linked, strict=True)
-        ):
+        # One grounded clause can have several source assertion occurrences.
+        # Associate by atom rather than zipping evidence rows to pattern clauses;
+        # support still counts variable bindings, not evidence occurrences.
+        for linked_row in linked:
             if not isinstance(linked_row, dict):
                 raise ValueError("exact evidence must be an object")
+            clause_index, clause = clauses_by_atom[linked_row["atom"]]
             if linked_row.get("kind") == "rule":
                 rule_row = evidence_by_id.get(str(linked_row.get("evidence_id")))
                 if not isinstance(rule_row, _RuleEvidence):
@@ -255,12 +279,9 @@ def _record(
             }
         )
     )
-    identifier = hashlib.sha256(
-        f"{bundle.bundle_id}:{bundle.bundle_version}:{pattern}".encode()
-    ).hexdigest()
     record = PatternRecord(
         contract_version="pattern-record-v1",
-        id=f"pattern-{identifier}",
+        id=_pattern_id(bundle, pattern),
         canonical_term=_canonical_term(clauses, bundle),
         interface_variables=variables,
         existential_variables=(),

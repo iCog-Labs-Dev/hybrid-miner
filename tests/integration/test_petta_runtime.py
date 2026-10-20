@@ -574,20 +574,26 @@ def test_real_petta_provisional_patterns_reach_records(tmp_path: Path) -> None:
         assert record.expensive_endpoint["observed_support"] >= 2
 
 
-def test_real_petta_admission_mining_and_exact_bindings(tmp_path: Path) -> None:
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_real_petta_admission_mining_and_exact_bindings(
+    tmp_path: Path, duplicate: bool
+) -> None:
     petta_root = _runtime_root("PETTA_ROOT")
     miner_root = _runtime_root("MINER_ROOT")
     bundle = _bundle()
     source = tmp_path / "source.jsonl"
+    documents = []
+    for document in (
+        _document("doc-1", "Mira left.", "mira", "leaving"),
+        _document("doc-2", "Nora sang.", "nora", "singing"),
+    ):
+        if duplicate:
+            payload = document.model_dump(mode="json")
+            payload["assertions"].append(dict(payload["assertions"][1]))
+            document = SemanticDocument.model_validate(payload)
+        documents.append(document)
     source.write_text(
-        "\n".join(
-            document.canonical_json()
-            for document in (
-                _document("doc-1", "Mira left.", "mira", "leaving"),
-                _document("doc-2", "Nora sang.", "nora", "singing"),
-            )
-        )
-        + "\n",
+        "\n".join(document.canonical_json() for document in documents) + "\n",
         encoding="utf-8",
     )
     accepted = tmp_path / "accepted.jsonl"
@@ -609,7 +615,8 @@ def test_real_petta_admission_mining_and_exact_bindings(tmp_path: Path) -> None:
         metadata_path=metadata,
         provenance_path=provenance,
     )
-    assert (emission.assertions, emission.facts) == (4, 4)
+    evidence_count = 6 if duplicate else 4
+    assert (emission.assertions, emission.facts) == (evidence_count, 4)
 
     admitted = tmp_path / "admitted.metta"
     support = tmp_path / "support.jsonl"
@@ -627,7 +634,7 @@ def test_real_petta_admission_mining_and_exact_bindings(tmp_path: Path) -> None:
         min_support=2,
     )
     assert (run.admission.accepted, run.admission.rejected, run.admission.facts) == (
-        4,
+        evidence_count,
         0,
         4,
     )
@@ -653,6 +660,10 @@ def test_real_petta_admission_mining_and_exact_bindings(tmp_path: Path) -> None:
     assert rows[0]["qualifying_support"] == 2
     assert rows[0]["excluded_bindings"] == []
     assert rows[0]["support_policy"] == "distinct-ground-facts-v1"
+    assert all(
+        len(binding["evidence"]) == (3 if duplicate else 2)
+        for binding in rows[0]["exact_bindings"]
+    )
     assert {binding["document_id"] for binding in rows[0]["exact_bindings"]} == {
         "doc-1",
         "doc-2",
@@ -698,6 +709,7 @@ def test_real_petta_admission_mining_and_exact_bindings(tmp_path: Path) -> None:
     }
     assert record.cheap_features == {"clause_count": 2, "variable_count": 2}
     assert record.expensive_endpoint == {"observed_support": 2}
+    assert len(record.parser_confidences) == evidence_count
     assert record.expensive_trace is not None
     assert record.expensive_trace["reported_support"] == 2
     assert record.expensive_trace["excluded_binding_count"] == 0
@@ -737,4 +749,7 @@ def test_real_petta_admission_mining_and_exact_bindings(tmp_path: Path) -> None:
         )
     assert blocked_graph.read_text(encoding="utf-8") == ""
     assert not blocked_support.exists()
-    assert len((tmp_path / "blocked-quarantine.jsonl").read_text().splitlines()) == 4
+    assert (
+        len((tmp_path / "blocked-quarantine.jsonl").read_text().splitlines())
+        == evidence_count
+    )
