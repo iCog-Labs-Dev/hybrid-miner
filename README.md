@@ -28,11 +28,11 @@ interchange. Its capabilities are:
 - PeTTa ingress: a packaged MeTTa rule checks emitted facts against evidence,
   predicate declarations, entity types, allowed argument types, and recorded
   source spans. The rule places each assertion in an accepted or quarantined
-  PeTTa space. A rejected assertion prevents release of a partial mining graph.
+  PeTTa space. A rejection quarantines its complete source document.
 - A depth-zero adapter that runs the pinned Hyperon Miner on a supplied fact
   graph and records alpha-normalized raw support with runtime revisions.
 - An admitted-support entry point that runs PeTTa ingress and passes only its
-  accepted graph to the miner; quarantine stops mining before support output.
+  accepted documents' graph to the miner, with a versioned admission selection.
 - Exact PeTTa binding recovery linked to validated source assertions, followed
   by construction of typed, source-linked candidate `PatternRecord` artifacts.
 - Unit tests, a pinned-runtime integration check, formatting/lint/type-check
@@ -42,6 +42,13 @@ Later phases cover additional source adapters, PeTTa-side
 source-text offset validation and full canonicalization, candidate scoring,
 Tier 2 promotion, non-myopic search, SVM/STLM control, and causal experiments.
 Raw support is not a promoted template or a measure of neural utility.
+The document contract also preserves source-extracted universal
+rules with typed, rule-local variables and signed antecedent/consequent
+clauses. Validation checks source-span bounds, variable scope, reference types,
+and the supplied ontology signatures. It does not execute these rules or assert
+their consequents. The emitter preserves these rules as declarative graph data,
+not executable MeTTa rewrites or unconditional conclusions. Rule graphs pass
+through the same admission, source-linkage and candidate-record workflow.
 The separate CI runtime job executes PeTTa admission and Hyperon Miner on a
 small deterministic fixture. It does not assess parser extraction quality or
 benchmark mining performance.
@@ -62,6 +69,7 @@ hybrid-miner/
 |   |   |-- __main__.py
 |   |   |-- semantic_documents.py
 |   |   |-- petta_gate.py
+|   |   |-- admission.py
 |   |   `-- ingest_semantic_assertion.metta
 |   |-- emission/
 |   |   |-- __main__.py
@@ -142,7 +150,8 @@ CI runs unit tests, formatting, lint, type checks, and submodule-pin
 verification. A separate job also executes the pinned PeTTa runtime and
 Hyperon Miner against raw graph and two-document fixtures: it requires
 admission and exact source-linked bindings, then verifies that removing
-metadata quarantines assertions and prevents mining. This check does not
+metadata quarantines affected documents; if no facts survive, mining cannot start.
+This check does not
 replace manual review of real parser output.
 
 ### Reproducing the PeTTa runtime check
@@ -191,7 +200,8 @@ $env:MINER_ROOT = (Resolve-Path .\hyperon-miner).Path
 python -m pytest tests/integration -q
 ```
 
-The expected result is two passing integration tests. The document check runs
+The integration suite covers fact-only, provisional and rule-bearing inputs,
+as well as the standalone graph interface. The document checks run
 Python ingestion
 and emission, executes the packaged admission rule in PeTTa, passes only the
 admitted graph to Hyperon Miner, recovers exact evidence bindings, and checks
@@ -205,7 +215,7 @@ your own parser artifacts and inspect its outputs.
 | Interface | Required input | Output and guarantees |
 | --- | --- | --- |
 | Standalone graph mining (python -m hybrid_miner.mining) | Caller-prepared MeTTa facts and runtime checkout paths | Raw pattern binding counts and runtime identity; no extraction or ontology-admission claim |
-| Audited semantic mining (python -m hybrid_miner.mining.admitted_support) | Emitted facts, metadata, provenance, a supplied ontology bundle, and runtime paths | Admission-gated graph and raw support; rejected assertions prevent mining |
+| Audited semantic mining (python -m hybrid_miner.mining.admitted_support) | Source documents, emitted facts, metadata, provenance, a supplied bundle and runtimes | Complete-document admission, selection manifest and support over accepted facts |
 | Source-evidence audit and record construction | Semantic documents, the same bundle, admitted facts, provenance, and matching support artifacts | Source-linked exact bindings and extraction-stage candidate records |
 
 `SemanticDocument` is the contract for character-span-grounded S1 text
@@ -263,9 +273,9 @@ From this repository's root:
 ```sh
 python -m hybrid_miner.ingestion --bundle bundle.json --input documents.jsonl --accepted-output accepted.jsonl --rejected-output rejected.jsonl
 python -m hybrid_miner.emission --bundle bundle.json --input accepted.jsonl --atoms-output facts.metta --metadata-output facts.metadata.metta --provenance-output facts.provenance.jsonl
-python -m hybrid_miner.mining.admitted_support --bundle bundle.json --emitted-atoms facts.metta --metadata facts.metadata.metta --provenance facts.provenance.jsonl --petta-root /path/to/PeTTa --miner-root ./hyperon-miner --admitted-output gated-facts.metta --quarantine-output gate-rejected.jsonl --support-output support.jsonl --min-support 2
-python -m hybrid_miner.mining.exact_matches --bundle bundle.json --documents accepted.jsonl --atoms gated-facts.metta --provenance facts.provenance.jsonl --support support.jsonl --petta-root /path/to/PeTTa --miner-root ./hyperon-miner --min-support 2 --output exact-bindings.jsonl --rejected-output exact-rejected.jsonl
-python -m hybrid_miner.mining.build_pattern_records --bundle bundle.json --documents accepted.jsonl --atoms gated-facts.metta --provenance facts.provenance.jsonl --exact exact-bindings.jsonl --output pattern-records.jsonl --rejected-output pattern-records.rejected.jsonl
+python -m hybrid_miner.mining.admitted_support --bundle bundle.json --documents accepted.jsonl --emitted-atoms facts.metta --metadata facts.metadata.metta --provenance facts.provenance.jsonl --petta-root /path/to/PeTTa --miner-root ./hyperon-miner --admitted-output gated-facts.metta --admission-output admission.json --quarantine-output gate-rejected.jsonl --support-output support.jsonl --min-support 2
+python -m hybrid_miner.mining.exact_matches --bundle bundle.json --documents accepted.jsonl --atoms gated-facts.metta --provenance facts.provenance.jsonl --admission admission.json --support support.jsonl --petta-root /path/to/PeTTa --miner-root ./hyperon-miner --min-support 2 --output exact-bindings.jsonl --rejected-output exact-rejected.jsonl
+python -m hybrid_miner.mining.build_pattern_records --bundle bundle.json --documents accepted.jsonl --atoms gated-facts.metta --provenance facts.provenance.jsonl --admission admission.json --exact exact-bindings.jsonl --output pattern-records.jsonl --rejected-output pattern-records.rejected.jsonl
 ```
 
 Ingestion rejects malformed records, ontology-version and signature mismatches,
@@ -280,21 +290,45 @@ and parser provenance; JSONL retains the complete assertion record. The
 metadata also maps each version-qualified PeTTa predicate symbol to its base
 relation name and ontology version. The suffix is an exact-match graph identity,
 not an embedding input or a replacement for the structured relation identity.
-The PeTTa ingress rule checks that each emitted assertion has a corresponding
-fact, evidence record, predicate declaration, entity-type and allowed-type
-declarations, and source-span metadata. It makes one admission decision per
-assertion; Python serializes that decision without repeating the same PeTTa
-presence queries. Document schema, ontology-bundle compatibility, and
-source-span offsets are validated against the source text before emission.
-The ingress rule checks artifact consistency, not independent semantic truth,
-and does not infer new relations. Predicate arity and argument-type validation
-belong to document validation; ingress checks that the emitted declarations
-are present, not whether they independently satisfy the YAML signature.
-If any assertion fails, the command exits nonzero, writes an empty graph, and
-records the failures. The integrated `admitted_support` command does not call
-Hyperon Miner or create support output after quarantine; it passes the gate's
-returned graph path directly to mining on success. Repair the source artifact
-and rerun rather than mining an inconsistent subset. The separate
+Admission receives the original exported documents through `--documents` and
+reuses the shared document/bundle validator to check references, source bounds
+and ontology compatibility. It compares emitted provenance to those original
+source records without renumbering assertions or rewriting their evidence.
+PeTTa then checks facts and required evidence in separate spaces. Arity,
+allowed argument types and known types are checked against a separate
+`&schema` compiled from the caller's bundle, not caller-supplied metadata.
+Forging matching `AllowedType` evidence cannot change the bundle's definitions.
+The policy is generic: no project-specific predicate names or fixed catalog
+modules are built into these checks.
+
+Required evidence includes parser/ontology provenance and source spans, plus
+factuality, conditions and alternatives when present in the source record.
+Missing required fields, conflicting values and undeclared semantic evidence
+quarantine the affected document. Optional source fields remain optional.
+The checks establish contract and artifact consistency, not semantic truth,
+and never infer new relations.
+
+Admission is atomic per `(corpus_id, document_id)`, not per input file. If one
+assertion or rule part fails, all graph entries from that document are excluded;
+other intact documents can still be mined. No shortened source rule is released.
+Malformed or unassignable input artifacts, incompatible global inputs and
+runtime failures stop the run. The CLI exits zero when admitted facts are
+available, even if some documents were quarantined; inspect the document counts
+and rejection file. If no facts survive, integrated mining exits with code 2
+and creates no support output. Fatal input/execution errors exit with code 1.
+
+The `document-admission-v1` JSON handoff records every document's decision and
+reasons and binds the selection to the bundle, original documents, original
+provenance and admitted graph by SHA-256. It is an artifact-consistency record,
+not authentication or a proof that the extraction is true. Supply its path as
+`--admission` to exact matching and record construction. Both stages verify the
+hashes and source-document coverage before excluding quarantined documents.
+Without that option, their complete-export checks remain unchanged; a partial
+graph cannot silently pass. Original document identities and assertion/rule
+indices are preserved. If `--admission-output` is omitted, its path is derived
+from the admitted graph by replacing its extension with `.admission.json`.
+
+The separate
 `python -m hybrid_miner.mining --atoms graph.metta ...` command remains available
 for independent raw-graph mining; it does not attest PeTTa admission.
 The mining adapter executes the upstream depth-zero miner and serializes observed
@@ -327,12 +361,27 @@ embedded or indexed Tier 2 templates. A record that cannot be represented
 without conflicting variable types or source evidence is written to the
 record-level rejected output.
 
-Source-linked exact audit and candidate construction currently accept only
-grounded predicate heads declared in the supplied bundle. ProvisionalRelation
-facts remain in the emitted graph and evidence artifacts, but patterns using
-that wrapper or variable predicate heads are rejected by this candidate path.
-Their rejection is recorded; this release does not claim complete candidate
-coverage for provisional relations or arbitrary raw graphs.
+Source-linked exact matching and candidate construction accept catalog-defined
+predicate heads and the explicit, bundle-qualified `ProvisionalRelation`
+wrapper. An unlisted bare head or a variable predicate head remains rejected.
+The provisional wrapper's first operand is a relation identifier, not an
+entity. It may be fixed (`rel:repair`) or a pattern variable; variable relation
+slots receive the record-level sort `ProvisionalRelationId`, distinct from
+ontology entity types. This does not add a type or predicate to the caller's
+ontology. Entity-argument types still come from validated source assertions.
+
+Candidate semantic terms retain `ProvisionalRelation` and its relation operand;
+they do not rename the wrapper to an approved predicate. Versioned wrapper
+identity remains in `ontology_groundings` and the qualified-pattern trace.
+For each provisional clause, `expensive_trace.provisional_relations` records
+the observed relation IDs and argument signatures from the exact source
+bindings. A variable relation slot can match different IDs: such a template
+is generic, not a claim that those relations are synonymous or newly approved.
+These observed IDs are exact-stage evidence, not cheap controller features.
+The existing `PatternRecord` contract can represent these records without a
+new field or contract version. Conflicting variable types, forged evidence,
+wrong bundle identity and insufficient distinct-fact support remain explicit
+rejection conditions.
 
 ## Contract use
 
@@ -365,14 +414,43 @@ downstream work. The semantic-document `SourceSpan` and pattern
 `SemanticDocument` carries an explicit `semantic-document-v1` version.
 `PatternRecord` requires `pattern-record-v1`; unversioned and unsupported
 records are rejected. Downstream consumers must install a compatible released
-package rather than maintain an independent copy of the contract. Its local
-copy in Neuro-Symbolic-LLM is transitional and must be removed after
-compatibility and dependency pinning are verified. The extraction-stage builder
+package rather than maintain an independent copy of the contract. The builder
 populates `cheap_features` only from candidate structure available before exact
 evaluation and rejects exact-support keys in that feature map. Exact observed
 support is stored in `expensive_endpoint`, with a compact exact-evaluation
 summary and runtime provenance in `expensive_trace`. Neither is a valid input
 feature when training a controller to predict the exact endpoint.
+
+### Declarative rule graphs
+
+`semantic-rule-v1` is a graph-encoding version, not another ontology catalog.
+For each source rule, emission creates an `ExtractedRule` declaration and
+`RuleAntecedentPositive`/`RuleAntecedentNegative` and
+`RuleConsequentPositive`/`RuleConsequentNegative` expressions. Their heads carry
+the encoding version. Every literal includes the source rule's document-scoped
+identity and a known or provisional predicate-identity operand. Rule-local
+variables become scoped ground symbols, alpha-normalized by first use; they
+cannot bind as an unconditional source entity or escape to another rule.
+
+Known predicate operands use `pred:` plus a qualified catalog identity;
+provisional operands use `prov:` plus bundle and relation identity. In candidate
+semantic views, fixed predicate operands omit version decoration, while the
+qualified pattern and source context retain it. Pattern variables in those
+positions have the record-level sorts `RuleId`, `RulePredicateId`,
+`RuleQuantifier` and `RuleVariable[<type>]`. These sorts do not add vocabulary
+to the supplied ontology. Entity constants retain their document identities.
+
+PeTTa admission requires the complete rule's graph and metadata for every
+encoded fragment. Missing premises, conclusions or required metadata prevent
+release of a partial source document. Exact recovery compares rule provenance to
+the original validated documents. Candidate `expensive_trace.rule_contexts`
+retains the complete source rules; `rule_fragment_semantics` explicitly marks
+a mined subgraph as structural, not a newly inferred executable implication.
+Omitting a premise from a mined fragment therefore does not authorize a shorter
+rule. Rules remain extraction hypotheses: this path performs no deduction,
+rule firing, ontology closure or predicate invention. Its supported logical
+subset is the document contract's universally quantified conjunctive rules
+with typed local variables and signed literals, not arbitrary first-order logic.
 
 ## Component boundaries
 
