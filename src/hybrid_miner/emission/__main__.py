@@ -32,6 +32,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     print(f"Facts: {result.facts} -> {result.atoms_path}")
     print(f"Assertion evidence: {result.assertions} -> {result.metadata_path}")
+    if result.rules:
+        print(f"Declarative source rules: {result.rules}")
     print(f"Provenance: {result.provenance_path}")
     return 0
 

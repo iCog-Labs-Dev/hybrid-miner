@@ -12,16 +12,22 @@ from hybrid_miner.contracts.pattern_record import (
 from hybrid_miner.contracts.semantic_document import (
     EntityRecord,
     ParserProvenance,
+    RuleLiteral,
+    RuleVariable,
     SemanticAssertion,
     SemanticDocument,
+    SemanticRule,
     SourceSpan,
 )
 
 __all__ = [
     "EntityRecord",
     "ParserProvenance",
+    "RuleLiteral",
+    "RuleVariable",
     "SemanticAssertion",
     "SemanticDocument",
+    "SemanticRule",
     "SourceSpan",
     "PatternProvenance",
     "PatternRecord",
