@@ -171,6 +171,9 @@ def test_rejects_provenance_that_disagrees_with_document(tmp_path) -> None:
         ("mixed", 3, (0, 1)),
         ("collapsed", 1, (0, 1)),
         ("invalid", 1, (0, 1)),
+        ("one", None, (0, 1)),
+        ("one", 1, (1, 0)),
+        ("single", None, (0, 1)),
     ],
 )
 def test_filters_bindings_without_discarding_valid_candidate(
@@ -194,6 +197,10 @@ def test_filters_bindings_without_discarding_valid_candidate(
         bindings.extend([(event, nora, sam), (event, sam, nora)])
     if mode == "invalid":
         bindings.append((event, nora, "missing-entity"))
+    if mode == "one":
+        bindings = [(event, nora, nora), (event, nora, sam)]
+    if mode == "single":
+        bindings = [(event, nora, sam)]
     pattern = "(, (Agent@upper-v1 $v0 $v1) (Agent@upper-v1 $v0 $v2))"
     support = tmp_path / "support.jsonl"
     support.write_text(
@@ -227,16 +234,23 @@ def test_filters_bindings_without_discarding_valid_candidate(
             miner_root=tmp_path,
             output_path=output,
             rejected_path=rejected,
-            min_support=minimum,
+            **({} if minimum is None else {"min_support": minimum}),
         )
         == expected
     )
     row = json.loads((output if expected[0] else rejected).read_text(encoding="utf-8"))
     assert row["reported_support"] == len(bindings)
-    assert row["qualifying_support"] == (0 if mode == "collapsed" else 2)
-    assert len(row["excluded_bindings"]) == 2
+    assert row["qualifying_support"] == (
+        0 if mode == "collapsed" else 1 if mode in {"one", "single"} else 2
+    )
+    assert len(row["excluded_bindings"]) == (
+        0 if mode == "single" else 1 if mode == "one" else 2
+    )
+    assert row["minimum_support"] == (2 if minimum is None else minimum)
     assert row["support_policy"] == "distinct-ground-facts-v1"
     if expected[0]:
-        assert len(row["exact_bindings"]) == 2
+        assert len(row["exact_bindings"]) == (1 if mode == "one" else 2)
     if mode == "invalid":
         assert "does not resolve to emitted facts" in row["reason"]
+    if mode == "single":
+        assert "reuses a ground fact" not in row["reason"]

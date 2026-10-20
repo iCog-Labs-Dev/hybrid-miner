@@ -1,13 +1,14 @@
 """Candidate-record construction from exact, source-linked PeTTa bindings."""
 
 import hashlib
+import json
 
 import pytest
 
 from hybrid_miner.contracts.semantic_document import SemanticDocument
 from hybrid_miner.emission.emit_petta import emit_petta
 from hybrid_miner.emission.symbols import entity_symbol
-from hybrid_miner.mining.build_pattern_records import _record
+from hybrid_miner.mining.build_pattern_records import _pattern_id, _record
 from hybrid_miner.mining.exact_matches import (
     _documents,
     _evidence_index,
@@ -18,7 +19,10 @@ from hybrid_miner.mining.exact_matches import (
 from hybrid_miner.ontology import OntologyBundle
 
 
-def test_builds_typed_candidate_and_rejects_changed_evidence(tmp_path) -> None:
+@pytest.mark.parametrize("duplicates", [(), (0,), (1,), (0, 1, 1)])
+def test_builds_typed_candidate_and_rejects_changed_evidence(
+    tmp_path, duplicates
+) -> None:
     bundle = OntologyBundle.model_validate(
         {
             "contract_version": "ontology-bundle-v1",
@@ -77,6 +81,11 @@ def test_builds_typed_candidate_and_rejects_changed_evidence(tmp_path) -> None:
             ],
         }
     )
+    payload = document.model_dump(mode="json")
+    payload["assertions"].extend(
+        document.assertions[index].model_dump(mode="json") for index in duplicates
+    )
+    document = SemanticDocument.model_validate(payload)
     source = tmp_path / "documents.jsonl"
     source.write_text(document.canonical_json() + "\n", encoding="utf-8")
     atoms = tmp_path / "facts.metta"
@@ -129,8 +138,21 @@ def test_builds_typed_candidate_and_rejects_changed_evidence(tmp_path) -> None:
     assert record.type_constraints == {"$v0": "Event", "$v1": "Entity"}
     assert record.cheap_features == {"clause_count": 2, "variable_count": 2}
     assert record.expensive_endpoint == {"observed_support": 1}
+    assert len(binding["facts"]) == 2
+    assert len(binding["evidence"]) == 2 + len(duplicates)
+    assert len(record.parser_confidences) == 2 + len(duplicates)
+    expected_id = hashlib.sha256(
+        json.dumps(
+            ["pattern-id-v1", bundle.bundle_id, bundle.bundle_version, pattern],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    assert record.id == f"pattern-{expected_id}"
     assert record.expensive_trace is not None
-    assert record.expensive_trace["factuality_counts"] == {"asserted": 2}
+    assert record.expensive_trace["factuality_counts"] == {
+        "asserted": 2 + len(duplicates)
+    }
     assert record.status == "candidate"
 
     filtered = dict(
@@ -173,3 +195,26 @@ def test_builds_typed_candidate_and_rejects_changed_evidence(tmp_path) -> None:
             evidence=evidence,
             graph_sha256=digest,
         )
+
+
+def test_pattern_id_preserves_field_boundaries_and_qualified_meaning() -> None:
+    def bundle(identifier, version):
+        return OntologyBundle.model_validate(
+            {
+                "contract_version": "ontology-bundle-v1",
+                "bundle_id": identifier,
+                "bundle_version": version,
+                "ontology_versions": ["test-v1"],
+                "types": ["Node"],
+            }
+        )
+
+    pattern = "(Node@test-v1 $v0)"
+    first, second = bundle("foo", "bar:baz"), bundle("foo:bar", "baz")
+    assert _pattern_id(first, pattern) != _pattern_id(second, pattern)
+    assert _pattern_id(first, pattern) == _pattern_id(first, pattern)
+    assert _pattern_id(first, pattern) != _pattern_id(first, "(Node@test-v2 $v0)")
+    unicode_bundle = bundle("réseau", "版:1")
+    assert _pattern_id(unicode_bundle, pattern) == _pattern_id(
+        bundle("réseau", "版:1"), pattern
+    )

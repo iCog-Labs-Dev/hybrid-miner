@@ -447,7 +447,7 @@ def recover_exact_matches(
     admission_path: Path | None = None,
     swipl: str = "swipl",
     timeout_seconds: int = 120,
-    min_support: int = 1,
+    min_support: int = 2,
 ) -> tuple[int, int]:
     """Validate artifacts, query PeTTa, and write accepted/rejected bindings."""
 
@@ -559,8 +559,12 @@ def recover_exact_matches(
                     )
             if len(linked) < min_support:
                 raise ValueError(
-                    f"qualifying support {len(linked)} is below minimum {min_support}; "
-                    "a binding that reuses a ground fact is excluded"
+                    f"qualifying support {len(linked)} is below minimum {min_support}"
+                    + (
+                        "; a binding that reuses a ground fact is excluded"
+                        if excluded
+                        else ""
+                    )
                 )
         except ValueError as error:
             rejected.append(
@@ -638,8 +642,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments.add_argument(
         "--min-support",
         type=int,
-        default=1,
-        help="minimum distinct-fact bindings after filtering (default: 1)",
+        default=2,
+        help="minimum distinct-fact bindings after filtering (default: 2)",
     )
     options = arguments.parse_args(argv)
     try:
