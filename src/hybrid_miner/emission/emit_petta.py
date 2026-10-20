@@ -1,4 +1,4 @@
-"""Encode validated S1 assertions as loadable PeTTa facts.
+"""Encode validated assertions and declarative source rules as PeTTa data.
 
 The graph file contains only matchable relation atoms. A separate PeTTa
 metadata space and a JSONL sidecar retain extraction evidence and provenance.
@@ -12,20 +12,26 @@ from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 
-from hybrid_miner.contracts.semantic_document import SemanticDocument
+from hybrid_miner.contracts.semantic_document import (
+    ParserProvenance,
+    SemanticAssertion,
+    SemanticDocument,
+)
 from hybrid_miner.emission import symbols
+from hybrid_miner.emission.semantic_rules import document_rule_graph
 from hybrid_miner.ontology import OntologyBundle
 
 
 @dataclass(frozen=True, slots=True)
 class EmissionResult:
-    """Artifacts and number of assertion occurrences written."""
+    """Artifacts, ordinary assertion count and declarative source-rule count."""
 
     assertions: int
     facts: int
     atoms_path: Path
     metadata_path: Path
     provenance_path: Path
+    rules: int = 0
 
 
 def _entity_symbol(document: SemanticDocument, entity_id: str) -> str:
@@ -74,19 +80,49 @@ def _fact(
 def _assertion_metadata(
     document: SemanticDocument, index: int, fact: str, version: str
 ) -> list[str]:
-    assertion = document.assertions[index]
-    evidence_id = _evidence_symbol(document, index)
+    return assertion_metadata(
+        assertion=document.assertions[index],
+        parser=document.parser,
+        corpus_id=document.corpus_id,
+        document_id=document.document_id,
+        index=index,
+        fact=fact,
+        version=version,
+    )
+
+
+def assertion_record(
+    document: SemanticDocument, index: int, bundle: OntologyBundle
+) -> tuple[str, dict[str, object]]:
+    """The authoritative encoding reused to link artifacts to source records."""
+    return _fact(
+        document, index, {p.name: p.ontology_version for p in bundle.predicates}, bundle
+    )
+
+
+def assertion_metadata(
+    *,
+    assertion: SemanticAssertion,
+    parser: ParserProvenance,
+    corpus_id: str,
+    document_id: str,
+    index: int,
+    fact: str,
+    version: str,
+) -> list[str]:
+    """Shared emission/admission evidence; optional source fields stay optional."""
+    evidence_id = symbols.evidence_symbol(corpus_id, document_id, index)
     lines = [
         f"(AssertionEvidence {evidence_id} {fact} {assertion.status} "
         f"{repr(assertion.confidence)})",
-        f"(ParserProvenance {evidence_id} {symbols.component(document.parser.model)} "
-        f"{symbols.component(document.parser.parser_version)} "
-        f"{symbols.component(document.parser.prompt_version)})",
+        f"(ParserProvenance {evidence_id} {symbols.component(parser.model)} "
+        f"{symbols.component(parser.parser_version)} "
+        f"{symbols.component(parser.prompt_version)})",
         f"(PredicateOntology {evidence_id} {symbols.component(version)})",
     ]
     lines.extend(
         f"(ParserOntology {evidence_id} {symbols.component(ontology_version)})"
-        for ontology_version in document.parser.ontology_versions
+        for ontology_version in parser.ontology_versions
     )
     lines.extend(
         f"(SourceSpan {evidence_id} {span.start} {span.end})"
@@ -99,10 +135,10 @@ def _assertion_metadata(
     if assertion.factuality is not None:
         lines.append(f"(Factuality {evidence_id} {assertion.factuality})")
     if assertion.conditional_on is not None:
-        lines.append(
-            f"(ConditionalOn {evidence_id} "
-            f"{_entity_symbol(document, assertion.conditional_on)})"
+        condition = symbols.entity_symbol(
+            corpus_id, document_id, assertion.conditional_on
         )
+        lines.append(f"(ConditionalOn {evidence_id} {condition})")
     return lines
 
 
@@ -137,10 +173,12 @@ def emit_petta(
     metadata.parent.mkdir(parents=True, exist_ok=True)
     provenance.parent.mkdir(parents=True, exist_ok=True)
     count = 0
+    rule_count = 0
     fact_count = 0
     seen: set[tuple[str, str]] = set()
     emitted_facts: set[str] = set()
     provisional_heads: set[tuple[str, str]] = set()
+    rule_metadata_seen: set[str] = set()
     created: list[Path] = []
     try:
         with ExitStack() as files:
@@ -182,6 +220,10 @@ def emit_petta(
                 except ValueError as error:
                     raise ValueError(f"line {line_number}: {error}") from error
                 for entity in document.entities:
+                    rule_metadata_seen.add(
+                        f"(EntityType {_entity_symbol(document, entity.id)} "
+                        f"{symbols.component(entity.type)})"
+                    )
                     metadata_writer.write(
                         f"(EntityType {_entity_symbol(document, entity.id)} "
                         f"{symbols.component(entity.type)})\n"
@@ -221,8 +263,29 @@ def emit_petta(
                         + "\n"
                     )
                     count += 1
+                for rule_index in range(len(document.rules)):
+                    for part in document_rule_graph(document, bundle, rule_index):
+                        if part.atom not in emitted_facts:
+                            atom_writer.write(part.atom + "\n")
+                            emitted_facts.add(part.atom)
+                            fact_count += 1
+                        for metadata_atom in part.metadata:
+                            if metadata_atom not in rule_metadata_seen:
+                                metadata_writer.write(metadata_atom + "\n")
+                                rule_metadata_seen.add(metadata_atom)
+                        evidence_writer.write(
+                            json.dumps(
+                                part.evidence,
+                                allow_nan=False,
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                                sort_keys=True,
+                            )
+                            + "\n"
+                        )
+                    rule_count += 1
     except BaseException:
         for output in created:
             output.unlink(missing_ok=True)
         raise
-    return EmissionResult(count, fact_count, atoms, metadata, provenance)
+    return EmissionResult(count, fact_count, atoms, metadata, provenance, rule_count)

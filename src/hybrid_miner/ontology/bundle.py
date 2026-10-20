@@ -120,6 +120,13 @@ class OntologyBundle(_BundleModel):
         """Check a document against this bundle's versions and signatures."""
 
         known_types = set(self.types)
+        for rule in document.rules:
+            for variable in rule.variables:
+                if variable.type not in known_types:
+                    raise ValueError(
+                        f"rule variable {variable.id!r} uses undeclared type "
+                        f"{variable.type!r}"
+                    )
         for entity in document.entities:
             if entity.type not in known_types:
                 raise ValueError(
