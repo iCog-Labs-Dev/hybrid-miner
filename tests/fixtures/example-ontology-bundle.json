@@ -1,0 +1,14 @@
+{
+  "contract_version": "ontology-bundle-v1",
+  "bundle_id": "example-discourse",
+  "bundle_version": "1.0",
+  "ontology_versions": ["example-upper-v1", "example-discourse-v1"],
+  "types": ["Clause", "Event"],
+  "predicates": [
+    {
+      "name": "Concession",
+      "ontology_version": "example-discourse-v1",
+      "argument_types": [["Clause"], ["Clause", "Event"]]
+    }
+  ]
+}
