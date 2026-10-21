@@ -14,6 +14,7 @@ from hybrid_miner.contracts.pattern_record import (
     PatternProvenance,
     PatternRecord,
     SourceSpan,
+    TypeConstraint,
     validate_extraction_pattern_record,
 )
 from hybrid_miner.contracts.semantic_document import SemanticDocument
@@ -31,6 +32,7 @@ from hybrid_miner.mining.canonicalize_patterns import (
 )
 from hybrid_miner.mining.exact_matches import (
     EvidenceEntry,
+    _binding_order,
     _documents,
     _evidence_index,
     _facts,
@@ -43,6 +45,7 @@ from hybrid_miner.mining.pattern_predicates import (
     PROVISIONAL_RELATION_TYPE,
     pattern_predicates,
 )
+from hybrid_miner.mining.pattern_types import constrain_variables, rule_type_constraints
 from hybrid_miner.ontology import OntologyBundle
 
 
@@ -133,7 +136,9 @@ def _record(
 
     clauses, variables = _pattern_clauses(pattern, bundle)
     heads = pattern_predicates(bundle)
-    types: dict[str, str] = {}
+    signatures = bundle.signatures()
+    permitted_types: dict[str, set[str]] = {}
+    binding_type_trace: list[dict[str, object]] = []
     provisional: dict[int, set[tuple[str, tuple[str, ...]]]] = {}
     rule_contexts: dict[tuple[str, str, int], dict[str, object]] = {}
     evidence_by_id = {
@@ -147,6 +152,7 @@ def _record(
     model_revisions: set[str | None] = set()
     factuality_counts: dict[str, int] = {}
     seen_bindings: set[tuple[str, tuple[tuple[str, str], ...]]] = set()
+    verified_bindings: list[tuple[dict[str, object], dict[str, str]]] = []
     for binding in bindings:
         if not isinstance(binding, dict):
             raise ValueError("exact binding must be an object")
@@ -171,6 +177,11 @@ def _record(
         )
         if json.dumps(recovered, sort_keys=True) != json.dumps(binding, sort_keys=True):
             raise ValueError("exact binding disagrees with source evidence")
+        verified_bindings.append((recovered, values))
+
+    for recovered, values in sorted(
+        verified_bindings, key=lambda pair: _binding_order(pair[0])
+    ):
         linked = recovered["evidence"]
         if not isinstance(linked, list):
             raise ValueError("exact evidence must be a list")
@@ -191,6 +202,8 @@ def _record(
         if not isinstance(corpus_id, str) or not isinstance(document_id, str):
             raise ValueError("exact binding lacks source identity")
         document = documents[(corpus_id, document_id)]
+        binding_types: dict[str, str] = {}
+        binding_allowed: dict[str, set[str]] = {}
         corpus_ids.add(corpus_id)
         source_ids.add(document_id)
         parser_versions.add(document.parser.parser_version)
@@ -209,16 +222,15 @@ def _record(
                 predicate = heads[clause[0]]
                 if not predicate.rule or linked_row["predicate"] != predicate.name:
                     raise ValueError("rule graph shape differs from exact evidence")
-                for variable, kind in zip(
+                constrain_variables(
                     clause[1:],
                     rule_operand_types(rule_row.rule, rule_row.fact_index),
-                    strict=True,
-                ):
-                    if (
-                        variable.startswith("$")
-                        and types.setdefault(variable, kind) != kind
-                    ):
-                        raise ValueError(f"variable {variable} has conflicting types")
+                    rule_type_constraints(
+                        rule_row.rule, rule_row.fact_index, signatures
+                    ),
+                    binding_types=binding_types,
+                    binding_allowed=binding_allowed,
+                )
                 spans, confidence = rule_source(rule_row.rule, rule_row.fact_index)
                 for span in (*spans, *rule_row.rule.source_spans):
                     source_spans.add((document_id, span.start, span.end))
@@ -258,17 +270,33 @@ def _record(
                 provisional.setdefault(clause_index, set()).add(
                     (relation_id, assertion.argument_types)
                 )
-            for variable, argument_type in zip(operands, argument_types, strict=True):
-                if not variable.startswith("$"):
-                    continue
-                previous = types.setdefault(variable, argument_type)
-                if previous != argument_type:
-                    raise ValueError(f"variable {variable} has conflicting types")
+            allowed = (
+                tuple(frozenset((kind,)) for kind in argument_types)
+                if predicate.provisional
+                else signatures[assertion.predicate]
+            )
+            constrain_variables(
+                operands,
+                argument_types,
+                allowed,
+                binding_types=binding_types,
+                binding_allowed=binding_allowed,
+            )
             for span in assertion.source_spans:
                 source_spans.add((document_id, span.start, span.end))
             confidences.append(assertion.confidence)
             factuality = assertion.factuality or "unclassified"
             factuality_counts[factuality] = factuality_counts.get(factuality, 0) + 1
+        for variable, allowed_types in binding_allowed.items():
+            permitted_types.setdefault(variable, set()).update(allowed_types)
+        binding_type_trace.append(
+            {
+                "corpus_id": corpus_id,
+                "document_id": document_id,
+                "variables": values,
+                "types": binding_types,
+            }
+        )
     if len(corpus_ids) != 1 or len(parser_versions) != 1:
         raise ValueError("candidate spans incompatible corpora or parser versions")
     ontology_groundings = tuple(
@@ -279,6 +307,10 @@ def _record(
             }
         )
     )
+    types: dict[str, TypeConstraint] = {
+        variable: next(iter(allowed)) if len(allowed) == 1 else tuple(sorted(allowed))
+        for variable, allowed in permitted_types.items()
+    }
     record = PatternRecord(
         contract_version="pattern-record-v1",
         id=_pattern_id(bundle, pattern),
@@ -314,6 +346,7 @@ def _record(
         expensive_endpoint={"observed_support": len(bindings)},
         expensive_trace={
             **support_summary,
+            "binding_types": binding_type_trace,
             **(
                 {
                     "rule_contexts": [
