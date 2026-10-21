@@ -76,6 +76,39 @@ def test_canonical_json_round_trip_is_deterministic() -> None:
     assert PatternRecord.from_canonical_json(encoded) == first
 
 
+def test_type_alternatives_have_canonical_or_semantics() -> None:
+    data = valid_record_data()
+    data["type_constraints"] = {
+        "$clause_0": ["Proposition", "Clause"],
+        "$clause_1": ["Clause"],
+    }
+    record = PatternRecord.model_validate(data)
+    assert record.type_constraints == {
+        "$clause_0": ("Clause", "Proposition"),
+        "$clause_1": "Clause",
+    }
+    reordered = deepcopy(data)
+    reordered["type_constraints"] = {
+        "$clause_1": "Clause",
+        "$clause_0": ["Clause", "Proposition"],
+    }
+    assert (
+        record.to_canonical_json()
+        == PatternRecord.model_validate(reordered).to_canonical_json()
+    )
+    assert PatternRecord.from_canonical_json(record.to_canonical_json()) == record
+
+
+@pytest.mark.parametrize(
+    "constraint", [[], [""], ["Clause", "Clause"], ["Clause", " "]]
+)
+def test_rejects_empty_or_duplicate_type_alternatives(constraint) -> None:
+    data = valid_record_data()
+    data["type_constraints"] = {"$clause_0": constraint, "$clause_1": "Clause"}
+    with pytest.raises(ValidationError):
+        PatternRecord.model_validate(data)
+
+
 @pytest.mark.parametrize("version", [None, "pattern-record-v2"])
 def test_requires_supported_contract_version(version: str | None) -> None:
     data = valid_record_data()

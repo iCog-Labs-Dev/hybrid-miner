@@ -352,14 +352,25 @@ Several source assertions may support the same grounded fact. Exact evidence
 keeps each occurrence linked by its `atom`; record construction associates all
 of them with the corresponding grounded clause and preserves their spans and
 confidences. Additional evidence occurrences do not increase binding support.
+Exact bindings are serialized in corpus/document/variable-assignment order,
+independent of PeTTa's return order. Record construction applies the same order
+after source verification, keeping each occurrence's evidence together rather
+than independently sorting confidence values. With unchanged input artifacts,
+equivalent binding orderings therefore produce identical candidate bytes.
 Pattern IDs hash the compact UTF-8 JSON array
 `["pattern-id-v1", bundle_id, bundle_version, qualified_pattern]`, so delimiters
 inside identifiers cannot make different identity tuples collide. This replaces
 the unreleased delimiter-concatenated IDs; regenerate earlier candidate artifacts
 before comparing IDs. It does not change the semantic display or mining support.
-Both exact-match outputs are audit artifacts, not promoted templates. The exact
-query has a per-run timeout and a 10,000-binding limit per candidate; throughput
-has not been established for large corpora. Record materialization rechecks each
+Both exact-match outputs are audit artifacts, not promoted templates. Exact
+queries enforce a per-run timeout (120 seconds), a 10,000-binding limit per
+candidate, and a 64 MiB stdout budget while consuming runtime output. The CLI
+exposes `--timeout-seconds`, `--max-bindings` and `--max-output-bytes`; stderr has
+a separate 1 MiB ceiling. Exceeding a budget terminates the query and creates
+neither exact output: a truncated match set is never certified. These limits
+bound query duration and collected output, not the Prolog process's total memory
+or its internal matching work before results are emitted. Throughput has not
+been established for large corpora. Record materialization rechecks each
 accepted binding against the source documents, fact graph, and provenance before
 constructing a validated extraction-stage `PatternRecord`. It stores the
 semantic relation
@@ -370,6 +381,27 @@ Tier 2 promotion require separate policies. These are candidate records, not
 embedded or indexed Tier 2 templates. A record that cannot be represented
 without conflicting variable types or source evidence is written to the
 record-level rejected output.
+
+Candidate `type_constraints` use a string for one type and a sorted JSON array
+for alternatives: `{"$v0":["TypeA","TypeB"]}` means TypeA **or** TypeB, not both.
+Single-type string records remain readable. For catalog predicates, permitted
+types come from the supplied signatures and are intersected at every position
+where a variable occurs within a match. A narrower position therefore still
+restricts that variable. Different permitted concrete types across separate
+matches do not reject the candidate or remove supporting bindings.
+Catalog alternatives describe the signature, not just the types observed in
+the current corpus. They do not invent a new ontology type or establish truth.
+
+Each match must remain internally type-consistent. Provisional argument types
+come from validated source evidence rather than an invented catalog signature;
+source-rule variables retain their scoped `RuleVariable[Type]` sorts, distinct
+from ordinary entities. Valid alternatives across matches are combined only
+after their individual checks. `expensive_trace.binding_types` records the
+concrete type and assignment for every match; the original documents and exact
+evidence remain available. A generic record deserializer checks the encoding;
+the source-linked builder checks its compatibility with the supplied ontology.
+Regenerate earlier pre-release candidate artifacts to include this typing trace.
+Consumers of multi-type records must support the alternative-array encoding.
 
 Source-linked exact matching and candidate construction accept catalog-defined
 predicate heads and the explicit, bundle-qualified `ProvisionalRelation`

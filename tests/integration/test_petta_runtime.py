@@ -23,6 +23,152 @@ from hybrid_miner.mining.exact_matches import _query_bindings, recover_exact_mat
 from hybrid_miner.ontology import OntologyBundle
 
 
+@pytest.mark.parametrize("channel", ["catalog", "provisional", "rule"])
+def test_real_petta_preserves_valid_mixed_types(tmp_path: Path, channel: str) -> None:
+    """Mixed concrete types survive the real source-to-record boundary."""
+    bundle = OntologyBundle.model_validate(
+        {
+            "contract_version": "ontology-bundle-v1",
+            "bundle_id": "mixed-types",
+            "bundle_version": "1",
+            "ontology_versions": ["test-v1"],
+            "types": ["TypeA", "TypeB"],
+            "predicates": [
+                {
+                    "name": name,
+                    "ontology_version": "test-v1",
+                    "argument_types": [["TypeA", "TypeB"]],
+                }
+                for name in ("Observed", "Tagged")
+            ],
+        }
+    )
+    documents = []
+    for number, kind in enumerate(("TypeA", "TypeB"), 1):
+
+        def literal(name: str, argument: str, kind: str = kind) -> dict[str, object]:
+            return {
+                "predicate": name,
+                "arguments": [argument],
+                "argument_types": [kind],
+                "status": "extracted-hypothesis",
+                "confidence": 0.9,
+                "source_spans": [{"start": 0, "end": 1}],
+            }
+
+        value: dict[str, object] = {
+            "document_id": f"doc-{number}",
+            "corpus_id": "mixed-types",
+            "source_text": "N.",
+            "parser": {
+                "model": "fixture",
+                "parser_version": "1",
+                "prompt_version": "1",
+                "ontology_versions": ["test-v1"],
+            },
+        }
+        if channel == "rule":
+            value["rules"] = [
+                {
+                    "id": "r1",
+                    "quantifier": "universal",
+                    "status": "extracted-hypothesis",
+                    "variables": [{"id": "$x", "type": kind}],
+                    "antecedents": [literal("Observed", "$x")],
+                    "consequents": [literal("Tagged", "$x")],
+                    "source_spans": [{"start": 0, "end": 1}],
+                }
+            ]
+        else:
+            second = literal("Tagged", "n")
+            if channel == "provisional":
+                second.update(
+                    predicate="ProvisionalRelation", provisional_relation_id="tagged"
+                )
+            value["entities"] = [
+                {"id": "n", "type": kind, "span": {"start": 0, "end": 1}}
+            ]
+            value["assertions"] = [literal("Observed", "n"), second]
+        documents.append(
+            bundle.validate_document(SemanticDocument.model_validate(value))
+        )
+    source = tmp_path / "documents.jsonl"
+    source.write_text(
+        "".join(doc.canonical_json() + "\n" for doc in documents), encoding="utf-8"
+    )
+    atoms, metadata, provenance, admitted, support, exact, patterns = (
+        tmp_path / name
+        for name in (
+            "facts.metta",
+            "metadata.metta",
+            "provenance.jsonl",
+            "admitted.metta",
+            "support.jsonl",
+            "exact.jsonl",
+            "patterns.jsonl",
+        )
+    )
+    emit_petta(
+        bundle=bundle,
+        input_path=source,
+        atoms_path=atoms,
+        metadata_path=metadata,
+        provenance_path=provenance,
+    )
+    petta, miner = _runtime_root("PETTA_ROOT"), _runtime_root("MINER_ROOT")
+    admission = tmp_path / "admission.json"
+    mine_admitted_support(
+        bundle=bundle,
+        documents_path=source,
+        emitted_atoms_path=atoms,
+        metadata_path=metadata,
+        provenance_path=provenance,
+        petta_root=petta,
+        miner_root=miner,
+        admitted_atoms_path=admitted,
+        admission_path=admission,
+        quarantine_path=tmp_path / "quarantine.jsonl",
+        support_path=support,
+    )
+    accepted, _ = recover_exact_matches(
+        bundle=bundle,
+        documents_path=source,
+        atoms_path=admitted,
+        provenance_path=provenance,
+        admission_path=admission,
+        support_path=support,
+        petta_root=petta,
+        miner_root=miner,
+        output_path=exact,
+        rejected_path=tmp_path / "exact-rejected.jsonl",
+    )
+    assert accepted > 0
+    assert build_pattern_records(
+        bundle=bundle,
+        documents_path=source,
+        atoms_path=admitted,
+        provenance_path=provenance,
+        admission_path=admission,
+        exact_path=exact,
+        output_path=patterns,
+        rejected_path=tmp_path / "records-rejected.jsonl",
+    ) == (accepted, 0)
+    records = [
+        PatternRecord.from_canonical_json(line)
+        for line in patterns.read_text(encoding="utf-8").splitlines()
+    ]
+    expected = (
+        ("RuleVariable[TypeA]", "RuleVariable[TypeB]")
+        if channel == "rule"
+        else ("TypeA", "TypeB")
+    )
+    assert any(expected in record.type_constraints.values() for record in records)
+    for record in records:
+        assert record.provenance.source_document_ids == ("doc-1", "doc-2")
+        assert record.expensive_endpoint["observed_support"] == 2
+        assert len(record.expensive_trace["binding_types"]) == 2
+
+
 def _runtime_root(name: str) -> Path:
     value = os.environ.get(name)
     if not value:

@@ -223,28 +223,26 @@ def test_filters_bindings_without_discarding_valid_candidate(
         exact_matches, "_query_bindings", lambda *a, **kw: {0: bindings}
     )
     output, rejected = tmp_path / "exact.jsonl", tmp_path / "rejected.jsonl"
-    assert (
-        exact_matches.recover_exact_matches(
-            bundle=_bundle(),
-            documents_path=tmp_path / "documents.jsonl",
-            atoms_path=tmp_path / "facts.metta",
-            provenance_path=tmp_path / "provenance.jsonl",
-            support_path=support,
-            petta_root=tmp_path,
-            miner_root=tmp_path,
-            output_path=output,
-            rejected_path=rejected,
-            **({} if minimum is None else {"min_support": minimum}),
-        )
-        == expected
+    options = dict(
+        bundle=_bundle(),
+        documents_path=tmp_path / "documents.jsonl",
+        atoms_path=tmp_path / "facts.metta",
+        provenance_path=tmp_path / "provenance.jsonl",
+        support_path=support,
+        petta_root=tmp_path,
+        miner_root=tmp_path,
+        output_path=output,
+        rejected_path=rejected,
+        **({} if minimum is None else {"min_support": minimum}),
     )
+    assert exact_matches.recover_exact_matches(**options) == expected
     row = json.loads((output if expected[0] else rejected).read_text(encoding="utf-8"))
     assert row["reported_support"] == len(bindings)
     assert row["qualifying_support"] == (
-        0 if mode == "collapsed" else 1 if mode in {"one", "single"} else 2
+        0 if mode == "collapsed" else 1 if mode in {"one", "single", "invalid"} else 2
     )
     assert len(row["excluded_bindings"]) == (
-        0 if mode == "single" else 1 if mode == "one" else 2
+        0 if mode == "single" else 1 if mode in {"one", "invalid"} else 2
     )
     assert row["minimum_support"] == (2 if minimum is None else minimum)
     assert row["support_policy"] == "distinct-ground-facts-v1"
@@ -254,3 +252,16 @@ def test_filters_bindings_without_discarding_valid_candidate(
         assert "does not resolve to emitted facts" in row["reason"]
     if mode == "single":
         assert "reuses a ground fact" not in row["reason"]
+
+    # Runtime enumeration order must not affect accepted or rejected artifacts.
+    # Invalid source bindings still fail closed; diagnostics count the same
+    # canonical prefix regardless of where that binding arrived from PeTTa.
+    monkeypatch.setattr(
+        exact_matches, "_query_bindings", lambda *a, **kw: {0: list(reversed(bindings))}
+    )
+    repeated_output = tmp_path / "exact-reordered.jsonl"
+    repeated_rejected = tmp_path / "rejected-reordered.jsonl"
+    options.update(output_path=repeated_output, rejected_path=repeated_rejected)
+    assert exact_matches.recover_exact_matches(**options) == expected
+    assert repeated_output.read_bytes() == output.read_bytes()
+    assert repeated_rejected.read_bytes() == rejected.read_bytes()

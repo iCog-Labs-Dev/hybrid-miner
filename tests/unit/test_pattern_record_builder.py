@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from copy import deepcopy
 
 import pytest
 
@@ -218,3 +219,115 @@ def test_pattern_id_preserves_field_boundaries_and_qualified_meaning() -> None:
     assert _pattern_id(unicode_bundle, pattern) == _pattern_id(
         bundle("réseau", "版:1"), pattern
     )
+
+
+def test_binding_order_preserves_occurrences_and_identical_record_bytes(tmp_path):
+    bundle = OntologyBundle.model_validate(
+        {
+            "contract_version": "ontology-bundle-v1",
+            "bundle_id": "ordering",
+            "bundle_version": "1",
+            "ontology_versions": ["test-v1"],
+            "types": ["Node"],
+            "predicates": [
+                {
+                    "name": "Tagged",
+                    "ontology_version": "test-v1",
+                    "argument_types": [["Node"]],
+                }
+            ],
+        }
+    )
+    source_documents = []
+    for name, confidences in (("z", (0.8, 0.4)), ("a", (0.9, 0.6))):
+        source_documents.append(
+            SemanticDocument.model_validate(
+                {
+                    "document_id": name,
+                    "corpus_id": "ordering",
+                    "source_text": "N.",
+                    "parser": {
+                        "model": "example",
+                        "parser_version": "1",
+                        "prompt_version": "1",
+                        "ontology_versions": ["test-v1"],
+                    },
+                    "entities": [
+                        {"id": "n", "type": "Node", "span": {"start": 0, "end": 1}}
+                    ],
+                    "assertions": [
+                        {
+                            "predicate": "Tagged",
+                            "arguments": ["n"],
+                            "argument_types": ["Node"],
+                            "status": "extracted-hypothesis",
+                            "confidence": confidence,
+                            "source_spans": [{"start": 0, "end": index + 1}],
+                        }
+                        for index, confidence in enumerate(confidences)
+                    ],
+                }
+            )
+        )
+    source = tmp_path / "documents.jsonl"
+    source.write_text(
+        "".join(doc.canonical_json() + "\n" for doc in source_documents),
+        encoding="utf-8",
+    )
+    atoms, provenance = tmp_path / "facts.metta", tmp_path / "provenance.jsonl"
+    emit_petta(
+        bundle=bundle,
+        input_path=source,
+        atoms_path=atoms,
+        metadata_path=tmp_path / "metadata.metta",
+        provenance_path=provenance,
+    )
+    facts, documents = _facts(atoms), _documents(source, bundle)
+    evidence = _evidence_index(provenance, facts, documents, bundle)
+    pattern = "(Tagged@test-v1 $v0)"
+    clauses, variables = _pattern_clauses(pattern, bundle)
+    bindings = [
+        _linked_binding(
+            clauses,
+            variables,
+            (entity_symbol("ordering", doc.document_id, "n"),),
+            facts=facts,
+            evidence=evidence,
+            documents=documents,
+        )
+        for doc in source_documents
+    ]
+    digest = hashlib.sha256(atoms.read_bytes()).hexdigest()
+    row = {
+        "pattern": pattern,
+        "exact_bindings": bindings,
+        "reported_support": 2,
+        "bundle_id": bundle.bundle_id,
+        "bundle_version": bundle.bundle_version,
+        "graph_sha256": digest,
+        "miner_revision": "miner",
+        "petta_revision": "petta",
+    }
+    options = dict(
+        bundle=bundle,
+        facts=facts,
+        documents=documents,
+        evidence=evidence,
+        graph_sha256=digest,
+    )
+    first = _record(row, **options)
+    reordered = deepcopy(row)
+    reordered["exact_bindings"].reverse()
+    second = _record(reordered, **options)
+    assert first.to_canonical_json() == second.to_canonical_json()
+    assert first.parser_confidences == (0.9, 0.6, 0.8, 0.4)
+    assert first.expensive_endpoint == {"observed_support": 2}
+
+    repeated = deepcopy(row)
+    repeated["exact_bindings"].append(deepcopy(bindings[0]))
+    repeated["reported_support"] = 3
+    with pytest.raises(ValueError, match="repeats a binding"):
+        _record(repeated, **options)
+    reordered["exact_bindings"][0]["evidence"][0]["confidence"] = 0.1
+    with pytest.raises(ValueError, match="disagrees with source evidence"):
+        _record(reordered, **options)
