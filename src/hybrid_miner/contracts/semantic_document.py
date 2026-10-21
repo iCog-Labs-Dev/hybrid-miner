@@ -173,6 +173,70 @@ class SemanticAssertion(_ContractModel):
         return self
 
 
+class RuleVariable(_ContractModel):
+    """A universally quantified variable, local to one extracted rule."""
+
+    id: str = Field(pattern=r"^\$[A-Za-z_][A-Za-z0-9_]*$")
+    type: str
+
+    @field_validator("type")
+    @classmethod
+    def validate_type(cls, value: str) -> str:
+        return _nonempty_text(value)
+
+
+class RuleLiteral(SemanticAssertion):
+    """A signed rule clause, not an independently asserted ground fact."""
+
+    polarity: Literal["positive", "negative"] = "positive"
+    factuality: Literal["hypothetical"] = "hypothetical"
+    conditional_on: None = None
+
+
+class SemanticRule(_ContractModel):
+    """Source-extracted universal implication with conjunctive sides.
+
+    Variables are scoped to this rule. This is an annotation of a source rule,
+    not permission to execute it or evidence that its consequent occurred.
+    """
+
+    id: str
+    quantifier: Literal["universal"] = "universal"
+    status: Literal["extracted-hypothesis"]
+    variables: tuple[RuleVariable, ...] = ()
+    antecedents: tuple[RuleLiteral, ...] = Field(min_length=1)
+    consequents: tuple[RuleLiteral, ...] = Field(min_length=1)
+    source_spans: tuple[SourceSpan, ...] = Field(min_length=1)
+
+    @field_validator("id")
+    @classmethod
+    def validate_id(cls, value: str) -> str:
+        return _identifier(value)
+
+    @model_validator(mode="after")
+    def validate_variable_scope(self) -> SemanticRule:
+        variables = {variable.id for variable in self.variables}
+        if len(variables) != len(self.variables):
+            raise ValueError("rule variable ids must be unique")
+        antecedent_variables = {
+            argument
+            for literal in self.antecedents
+            for argument in literal.arguments
+            if argument.startswith("$")
+        }
+        consequent_variables = {
+            argument
+            for literal in self.consequents
+            for argument in literal.arguments
+            if argument.startswith("$")
+        }
+        if antecedent_variables | consequent_variables != variables:
+            raise ValueError("rule variables must be declared and used")
+        if not consequent_variables <= antecedent_variables:
+            raise ValueError("consequent variables must occur in the antecedents")
+        return self
+
+
 class SemanticDocument(_ContractModel):
     """One source document and its S1 extraction hypotheses."""
 
@@ -183,6 +247,7 @@ class SemanticDocument(_ContractModel):
     parser: ParserProvenance
     entities: tuple[EntityRecord, ...] = ()
     assertions: tuple[SemanticAssertion, ...] = ()
+    rules: tuple[SemanticRule, ...] = ()
 
     @field_validator("document_id", "corpus_id")
     @classmethod
@@ -228,12 +293,37 @@ class SemanticDocument(_ContractModel):
                         f"argument {argument_id!r} type {argument_type!r} "
                         f"does not match entity type {referenced_entity.type!r}"
                     )
+        rule_ids = [rule.id for rule in self.rules]
+        if len(set(rule_ids)) != len(rule_ids):
+            raise ValueError("rule ids must be unique within a document")
+        for rule in self.rules:
+            variables = {variable.id: variable for variable in rule.variables}
+            if variables.keys() & entities.keys():
+                raise ValueError("rule variables must not shadow document entities")
+            for span in rule.source_spans:
+                if span.end > source_length:
+                    raise ValueError("rule source span exceeds source text")
+            for literal in (*rule.antecedents, *rule.consequents):
+                for span in literal.source_spans:
+                    if span.end > source_length:
+                        raise ValueError("rule literal source span exceeds source text")
+                for argument, argument_type in zip(
+                    literal.arguments, literal.argument_types, strict=True
+                ):
+                    referent = variables.get(argument) or entities.get(argument)
+                    if referent is None:
+                        raise ValueError(f"unknown rule argument {argument!r}")
+                    if referent.type != argument_type:
+                        raise ValueError(f"rule argument {argument!r} type mismatch")
         return self
 
     def canonical_json(self) -> str:
         """Serialize identically across processes for auditing and hashing."""
 
         payload = self.model_dump(mode="json")
+        if not self.rules:
+            # Preserve canonical bytes for previously valid fact-only records.
+            del payload["rules"]
         for assertion in payload["assertions"]:
             if assertion["factuality"] is None:
                 del assertion["factuality"]
@@ -263,7 +353,10 @@ class SemanticDocument(_ContractModel):
             raise ValueError(
                 "ontology signature versions do not match parser provenance"
             )
-        for assertion in self.assertions:
+        assertions = [*self.assertions]
+        for rule in self.rules:
+            assertions.extend((*rule.antecedents, *rule.consequents))
+        for assertion in assertions:
             if assertion.predicate == "ProvisionalRelation":
                 if assertion.provisional_relation_id in signatures:
                     raise ValueError(

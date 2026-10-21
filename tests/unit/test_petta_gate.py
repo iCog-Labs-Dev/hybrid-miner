@@ -1,4 +1,4 @@
-"""Contract checks for PeTTa ingress and assertion-level quarantine."""
+"""Contract checks for PeTTa ingress and complete-document quarantine."""
 
 import json
 
@@ -100,6 +100,7 @@ def test_gate_quarantines_failed_petta_check(tmp_path, monkeypatch) -> None:
     rejected = tmp_path / "rejected.jsonl"
     result = petta_gate.gate_emitted_facts(
         bundle=bundle,
+        documents_path=source,
         atoms_path=atoms,
         metadata_path=metadata,
         provenance_path=provenance,
@@ -114,7 +115,7 @@ def test_gate_quarantines_failed_petta_check(tmp_path, monkeypatch) -> None:
     )
 
 
-def test_gate_does_not_publish_a_partial_graph(tmp_path, monkeypatch) -> None:
+def test_gate_does_not_publish_a_partial_document(tmp_path, monkeypatch) -> None:
     bundle = _bundle()
     source = tmp_path / "documents.jsonl"
     document = _document()
@@ -143,6 +144,7 @@ def test_gate_does_not_publish_a_partial_graph(tmp_path, monkeypatch) -> None:
     rejected = tmp_path / "rejected.jsonl"
     result = petta_gate.gate_emitted_facts(
         bundle=bundle,
+        documents_path=source,
         atoms_path=atoms,
         metadata_path=metadata,
         provenance_path=provenance,
@@ -182,6 +184,7 @@ def test_gate_rejects_provenance_ontology_mismatch_before_petta(
     rejected = tmp_path / "rejected.jsonl"
     result = petta_gate.gate_emitted_facts(
         bundle=bundle,
+        documents_path=source,
         atoms_path=atoms,
         metadata_path=metadata,
         provenance_path=provenance,
@@ -189,9 +192,9 @@ def test_gate_rejects_provenance_ontology_mismatch_before_petta(
         accepted_path=accepted,
         rejected_path=rejected,
     )
-    assert (result.accepted, result.rejected, result.facts) == (0, 2, 0)
+    assert (result.accepted, result.rejected, result.facts) == (0, 1, 0)
     rows = [
         json.loads(line) for line in rejected.read_text(encoding="utf-8").splitlines()
     ]
     assert any("ontology version" in row["error"] for row in rows)
-    assert any("unlinked" in row["error"] for row in rows)
+    assert any("provenance does not cover" in row["error"] for row in rows)

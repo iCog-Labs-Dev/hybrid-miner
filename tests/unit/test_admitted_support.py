@@ -31,6 +31,7 @@ def _bundle() -> OntologyBundle:
 
 def _paths(tmp_path: Path) -> dict[str, Path]:
     return {
+        "documents_path": tmp_path / "documents.jsonl",
         "emitted_atoms_path": tmp_path / "emitted.metta",
         "metadata_path": tmp_path / "metadata.metta",
         "provenance_path": tmp_path / "provenance.jsonl",
@@ -81,6 +82,28 @@ def test_quarantine_prevents_mining_and_support_output(tmp_path, monkeypatch) ->
     with pytest.raises(admitted_support.AdmissionRejected, match="did not start"):
         admitted_support.mine_admitted_support(bundle=_bundle(), **paths)
     assert not paths["support_path"].exists()
+
+
+@pytest.mark.parametrize("invalid", [0, -1, True])
+def test_invalid_support_threshold_is_rejected_before_admission(
+    tmp_path, monkeypatch, invalid
+) -> None:
+    def unexpected_admission(**kwargs):
+        raise AssertionError("admission must not run")
+
+    monkeypatch.setattr(admitted_support, "gate_emitted_facts", unexpected_admission)
+    with pytest.raises(ValueError, match="positive integer"):
+        admitted_support.mine_admitted_support(
+            bundle=_bundle(), **_paths(tmp_path), min_support=invalid
+        )
+
+
+def test_admission_manifest_cannot_alias_support_output(tmp_path) -> None:
+    paths = _paths(tmp_path)
+    with pytest.raises(ValueError, match="paths must differ"):
+        admitted_support.mine_admitted_support(
+            bundle=_bundle(), **paths, admission_path=paths["support_path"]
+        )
 
 
 def test_existing_support_output_fails_before_admission(tmp_path, monkeypatch) -> None:
