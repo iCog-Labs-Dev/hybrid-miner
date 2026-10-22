@@ -151,6 +151,7 @@ def test_provisional_pattern_survives_exact_and_record_validation(
         miner_root=tmp_path,
         output_path=exact,
         rejected_path=tmp_path / "exact-rejected.jsonl",
+        min_support=1 if fixed else 2,
     ) == (1, 0)
     output = tmp_path / "records.jsonl"
     build_args = dict(

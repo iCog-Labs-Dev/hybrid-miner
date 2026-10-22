@@ -1,13 +1,15 @@
 """Candidate-record construction from exact, source-linked PeTTa bindings."""
 
 import hashlib
+import json
+from copy import deepcopy
 
 import pytest
 
 from hybrid_miner.contracts.semantic_document import SemanticDocument
 from hybrid_miner.emission.emit_petta import emit_petta
 from hybrid_miner.emission.symbols import entity_symbol
-from hybrid_miner.mining.build_pattern_records import _record
+from hybrid_miner.mining.build_pattern_records import _pattern_id, _record
 from hybrid_miner.mining.exact_matches import (
     _documents,
     _evidence_index,
@@ -18,7 +20,10 @@ from hybrid_miner.mining.exact_matches import (
 from hybrid_miner.ontology import OntologyBundle
 
 
-def test_builds_typed_candidate_and_rejects_changed_evidence(tmp_path) -> None:
+@pytest.mark.parametrize("duplicates", [(), (0,), (1,), (0, 1, 1)])
+def test_builds_typed_candidate_and_rejects_changed_evidence(
+    tmp_path, duplicates
+) -> None:
     bundle = OntologyBundle.model_validate(
         {
             "contract_version": "ontology-bundle-v1",
@@ -77,6 +82,11 @@ def test_builds_typed_candidate_and_rejects_changed_evidence(tmp_path) -> None:
             ],
         }
     )
+    payload = document.model_dump(mode="json")
+    payload["assertions"].extend(
+        document.assertions[index].model_dump(mode="json") for index in duplicates
+    )
+    document = SemanticDocument.model_validate(payload)
     source = tmp_path / "documents.jsonl"
     source.write_text(document.canonical_json() + "\n", encoding="utf-8")
     atoms = tmp_path / "facts.metta"
@@ -129,8 +139,21 @@ def test_builds_typed_candidate_and_rejects_changed_evidence(tmp_path) -> None:
     assert record.type_constraints == {"$v0": "Event", "$v1": "Entity"}
     assert record.cheap_features == {"clause_count": 2, "variable_count": 2}
     assert record.expensive_endpoint == {"observed_support": 1}
+    assert len(binding["facts"]) == 2
+    assert len(binding["evidence"]) == 2 + len(duplicates)
+    assert len(record.parser_confidences) == 2 + len(duplicates)
+    expected_id = hashlib.sha256(
+        json.dumps(
+            ["pattern-id-v1", bundle.bundle_id, bundle.bundle_version, pattern],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    assert record.id == f"pattern-{expected_id}"
     assert record.expensive_trace is not None
-    assert record.expensive_trace["factuality_counts"] == {"asserted": 2}
+    assert record.expensive_trace["factuality_counts"] == {
+        "asserted": 2 + len(duplicates)
+    }
     assert record.status == "candidate"
 
     filtered = dict(
@@ -173,3 +196,138 @@ def test_builds_typed_candidate_and_rejects_changed_evidence(tmp_path) -> None:
             evidence=evidence,
             graph_sha256=digest,
         )
+
+
+def test_pattern_id_preserves_field_boundaries_and_qualified_meaning() -> None:
+    def bundle(identifier, version):
+        return OntologyBundle.model_validate(
+            {
+                "contract_version": "ontology-bundle-v1",
+                "bundle_id": identifier,
+                "bundle_version": version,
+                "ontology_versions": ["test-v1"],
+                "types": ["Node"],
+            }
+        )
+
+    pattern = "(Node@test-v1 $v0)"
+    first, second = bundle("foo", "bar:baz"), bundle("foo:bar", "baz")
+    assert _pattern_id(first, pattern) != _pattern_id(second, pattern)
+    assert _pattern_id(first, pattern) == _pattern_id(first, pattern)
+    assert _pattern_id(first, pattern) != _pattern_id(first, "(Node@test-v2 $v0)")
+    unicode_bundle = bundle("réseau", "版:1")
+    assert _pattern_id(unicode_bundle, pattern) == _pattern_id(
+        bundle("réseau", "版:1"), pattern
+    )
+
+
+def test_binding_order_preserves_occurrences_and_identical_record_bytes(tmp_path):
+    bundle = OntologyBundle.model_validate(
+        {
+            "contract_version": "ontology-bundle-v1",
+            "bundle_id": "ordering",
+            "bundle_version": "1",
+            "ontology_versions": ["test-v1"],
+            "types": ["Node"],
+            "predicates": [
+                {
+                    "name": "Tagged",
+                    "ontology_version": "test-v1",
+                    "argument_types": [["Node"]],
+                }
+            ],
+        }
+    )
+    source_documents = []
+    for name, confidences in (("z", (0.8, 0.4)), ("a", (0.9, 0.6))):
+        source_documents.append(
+            SemanticDocument.model_validate(
+                {
+                    "document_id": name,
+                    "corpus_id": "ordering",
+                    "source_text": "N.",
+                    "parser": {
+                        "model": "example",
+                        "parser_version": "1",
+                        "prompt_version": "1",
+                        "ontology_versions": ["test-v1"],
+                    },
+                    "entities": [
+                        {"id": "n", "type": "Node", "span": {"start": 0, "end": 1}}
+                    ],
+                    "assertions": [
+                        {
+                            "predicate": "Tagged",
+                            "arguments": ["n"],
+                            "argument_types": ["Node"],
+                            "status": "extracted-hypothesis",
+                            "confidence": confidence,
+                            "source_spans": [{"start": 0, "end": index + 1}],
+                        }
+                        for index, confidence in enumerate(confidences)
+                    ],
+                }
+            )
+        )
+    source = tmp_path / "documents.jsonl"
+    source.write_text(
+        "".join(doc.canonical_json() + "\n" for doc in source_documents),
+        encoding="utf-8",
+    )
+    atoms, provenance = tmp_path / "facts.metta", tmp_path / "provenance.jsonl"
+    emit_petta(
+        bundle=bundle,
+        input_path=source,
+        atoms_path=atoms,
+        metadata_path=tmp_path / "metadata.metta",
+        provenance_path=provenance,
+    )
+    facts, documents = _facts(atoms), _documents(source, bundle)
+    evidence = _evidence_index(provenance, facts, documents, bundle)
+    pattern = "(Tagged@test-v1 $v0)"
+    clauses, variables = _pattern_clauses(pattern, bundle)
+    bindings = [
+        _linked_binding(
+            clauses,
+            variables,
+            (entity_symbol("ordering", doc.document_id, "n"),),
+            facts=facts,
+            evidence=evidence,
+            documents=documents,
+        )
+        for doc in source_documents
+    ]
+    digest = hashlib.sha256(atoms.read_bytes()).hexdigest()
+    row = {
+        "pattern": pattern,
+        "exact_bindings": bindings,
+        "reported_support": 2,
+        "bundle_id": bundle.bundle_id,
+        "bundle_version": bundle.bundle_version,
+        "graph_sha256": digest,
+        "miner_revision": "miner",
+        "petta_revision": "petta",
+    }
+    options = dict(
+        bundle=bundle,
+        facts=facts,
+        documents=documents,
+        evidence=evidence,
+        graph_sha256=digest,
+    )
+    first = _record(row, **options)
+    reordered = deepcopy(row)
+    reordered["exact_bindings"].reverse()
+    second = _record(reordered, **options)
+    assert first.to_canonical_json() == second.to_canonical_json()
+    assert first.parser_confidences == (0.9, 0.6, 0.8, 0.4)
+    assert first.expensive_endpoint == {"observed_support": 2}
+
+    repeated = deepcopy(row)
+    repeated["exact_bindings"].append(deepcopy(bindings[0]))
+    repeated["reported_support"] = 3
+    with pytest.raises(ValueError, match="repeats a binding"):
+        _record(repeated, **options)
+    reordered["exact_bindings"][0]["evidence"][0]["confidence"] = 0.1
+    with pytest.raises(ValueError, match="disagrees with source evidence"):
+        _record(reordered, **options)

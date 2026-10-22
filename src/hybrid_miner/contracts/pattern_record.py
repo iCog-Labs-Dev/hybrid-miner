@@ -9,6 +9,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 SemanticLevel = Literal["surface", "extracted", "derived", "invented"]
+TypeConstraint = str | tuple[str, ...]
 
 
 class PatternRecordError(ValueError):
@@ -103,7 +104,7 @@ class PatternRecord(_ContractModel):
     canonical_term: str
     interface_variables: tuple[str, ...]
     existential_variables: tuple[str, ...]
-    type_constraints: dict[str, str]
+    type_constraints: dict[str, TypeConstraint]
     semantic_level: SemanticLevel
     ontology_groundings: tuple[str, ...]
     semantic_consequences: tuple[str, ...] | None = None
@@ -162,16 +163,30 @@ class PatternRecord(_ContractModel):
 
     @field_validator("type_constraints")
     @classmethod
-    def validate_type_constraints(cls, value: dict[str, str]) -> dict[str, str]:
-        normalized: dict[str, str] = {}
-        for variable, type_name in value.items():
+    def validate_type_constraints(
+        cls, value: dict[str, TypeConstraint]
+    ) -> dict[str, TypeConstraint]:
+        """A string is one type; an ordered JSON array means alternative types."""
+        normalized: dict[str, TypeConstraint] = {}
+        for variable, constraint in value.items():
             variable = variable.strip()
-            type_name = type_name.strip()
-            if not variable or not type_name:
+            alternatives = (constraint,) if isinstance(constraint, str) else constraint
+            alternatives = tuple(sorted(item.strip() for item in alternatives))
+            if (
+                not variable
+                or not alternatives
+                or any(not item for item in alternatives)
+            ):
                 raise ValueError(
                     "type constraints require non-empty variables and types"
                 )
-            normalized[variable] = type_name
+            if len(set(alternatives)) != len(alternatives):
+                raise ValueError("type alternatives cannot contain duplicates")
+            if variable in normalized:
+                raise ValueError("type constraints repeat a normalized variable")
+            normalized[variable] = (
+                alternatives[0] if len(alternatives) == 1 else alternatives
+            )
         return normalized
 
     @field_validator("parser_confidences")

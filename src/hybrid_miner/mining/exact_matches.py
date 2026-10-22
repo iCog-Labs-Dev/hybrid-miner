@@ -9,9 +9,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
+import threading
 from collections import defaultdict
 from collections.abc import Sequence
 from contextlib import ExitStack
@@ -54,6 +56,8 @@ from hybrid_miner.ontology import OntologyBundle
 
 _MARKER = "CandidateBinding"
 _MAX_BINDINGS = 10_000
+_MAX_OUTPUT_BYTES = 64 * 1024 * 1024
+_MAX_STDERR_BYTES = 1024 * 1024
 _SUPPORT_POLICY = "distinct-ground-facts-v1"
 
 
@@ -284,6 +288,106 @@ def _pattern_clauses(
     return tuple(clauses), tuple(variables)
 
 
+def _collect_bindings(
+    command: list[str],
+    patterns: dict[int, tuple[str, tuple[str, ...]]],
+    *,
+    cwd: str,
+    timeout_seconds: int,
+    max_bindings: int,
+    max_output_bytes: int,
+) -> dict[int, list[tuple[str, ...]]]:
+    """Consume bounded runtime output; never return a truncated binding set."""
+    results: dict[int, list[tuple[str, ...]]] = defaultdict(list)
+    timed_out = threading.Event()
+    stderr_exceeded = threading.Event()
+    diagnostics = bytearray()
+    with subprocess.Popen(
+        command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    ) as process:
+        assert process.stdout is not None and process.stderr is not None
+        stderr_stream = process.stderr
+
+        def stop() -> None:
+            if process.poll() is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+
+        def expire() -> None:
+            timed_out.set()
+            stop()
+
+        def drain_stderr() -> None:
+            consumed = 0
+            while chunk := os.read(stderr_stream.fileno(), 8192):
+                consumed += len(chunk)
+                diagnostics.extend(chunk)
+                del diagnostics[:-2000]
+                if consumed > _MAX_STDERR_BYTES:
+                    stderr_exceeded.set()
+                    stop()
+                    break
+
+        timer = threading.Timer(timeout_seconds, expire)
+        reader = threading.Thread(target=drain_stderr, daemon=True)
+        timer.start()
+        reader.start()
+        failure: BaseException | None = None
+        try:
+            consumed = 0
+            while raw := process.stdout.readline(max_output_bytes - consumed + 1):
+                consumed += len(raw)
+                if consumed > max_output_bytes:
+                    raise ValueError(
+                        f"PeTTa exact query exceeds {max_output_bytes} output bytes"
+                    )
+                line = raw.decode("utf-8", errors="strict").strip()
+                if not line.startswith(f"({_MARKER} "):
+                    continue
+                parsed = parse_expression(line)
+                if (
+                    not isinstance(parsed, tuple)
+                    or len(parsed) < 2
+                    or not isinstance(parsed[1], str)
+                    or not parsed[1].isdigit()
+                    or any(not isinstance(item, str) for item in parsed[2:])
+                ):
+                    raise ValueError(f"invalid PeTTa binding: {line}")
+                index = int(parsed[1])
+                if index not in patterns or len(parsed) != 2 + len(patterns[index][1]):
+                    raise ValueError(f"unexpected PeTTa binding: {line}")
+                if len(results[index]) >= max_bindings:
+                    raise ValueError(
+                        f"pattern {index} exceeds {max_bindings} exact bindings"
+                    )
+                results[index].append(
+                    tuple(item for item in parsed[2:] if isinstance(item, str))
+                )
+            process.wait()
+        except BaseException as error:
+            failure = error
+            stop()
+            process.wait()
+        finally:
+            timer.cancel()
+            timer.join()
+            reader.join()
+    if timed_out.is_set():
+        raise subprocess.TimeoutExpired(command, timeout_seconds)
+    if stderr_exceeded.is_set():
+        raise ValueError(f"PeTTa exact query exceeds {_MAX_STDERR_BYTES} stderr bytes")
+    if failure is not None:
+        raise failure
+    if process.returncode:
+        raise RuntimeError(
+            f"PeTTa exact matching exited {process.returncode}: "
+            f"{diagnostics.decode('utf-8', errors='replace').strip()}"
+        )
+    return results
+
+
 def _query_bindings(
     patterns: dict[int, tuple[str, tuple[str, ...]]],
     *,
@@ -291,16 +395,17 @@ def _query_bindings(
     petta_root: Path,
     swipl: str,
     timeout_seconds: int,
+    max_bindings: int = _MAX_BINDINGS,
+    max_output_bytes: int = _MAX_OUTPUT_BYTES,
 ) -> dict[int, list[tuple[str, ...]]]:
     script_lines = [f"!(import! &db {atoms_path.resolve().as_posix()})"]
     for index, (pattern, variables) in patterns.items():
         body = " ".join((_MARKER, str(index), *variables))
         script_lines.append(f"!(match &db {pattern} ({body}))")
-    results: dict[int, list[tuple[str, ...]]] = defaultdict(list)
     with tempfile.TemporaryDirectory(prefix="hybrid-miner-bindings-") as temporary:
         script = Path(temporary) / "bindings.metta"
         script.write_text("\n".join(script_lines) + "\n", encoding="utf-8")
-        process = subprocess.run(
+        return _collect_bindings(
             [
                 swipl,
                 "--stack_limit=8g",
@@ -311,40 +416,12 @@ def _query_bindings(
                 str(script),
                 "--silent",
             ],
+            patterns,
             cwd=temporary,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout_seconds,
+            timeout_seconds=timeout_seconds,
+            max_bindings=max_bindings,
+            max_output_bytes=max_output_bytes,
         )
-    if process.returncode:
-        raise RuntimeError(
-            f"PeTTa exact matching exited {process.returncode}: "
-            f"{process.stderr.strip()}\n{process.stdout[-2000:]}"
-        )
-    for line in process.stdout.splitlines():
-        line = line.strip()
-        if not line.startswith(f"({_MARKER} "):
-            continue
-        parsed = parse_expression(line)
-        if (
-            not isinstance(parsed, tuple)
-            or len(parsed) < 2
-            or not isinstance(parsed[1], str)
-            or not parsed[1].isdigit()
-            or any(not isinstance(item, str) for item in parsed[2:])
-        ):
-            raise ValueError(f"invalid PeTTa binding: {line}")
-        index = int(parsed[1])
-        if index not in patterns or len(parsed) != 2 + len(patterns[index][1]):
-            raise ValueError(f"unexpected PeTTa binding: {line}")
-        results[index].append(
-            tuple(item for item in parsed[2:] if isinstance(item, str))
-        )
-        if len(results[index]) > _MAX_BINDINGS:
-            raise ValueError(f"pattern {index} exceeds {_MAX_BINDINGS} exact bindings")
-    return results
 
 
 def _linked_binding(
@@ -433,6 +510,15 @@ def _linked_binding(
     }
 
 
+def _binding_order(binding: dict[str, object]) -> tuple[str, str, str]:
+    """Order source-verified bindings without changing occurrence contents."""
+    return (
+        str(binding["corpus_id"]),
+        str(binding["document_id"]),
+        json.dumps(binding["variables"], sort_keys=True, ensure_ascii=False),
+    )
+
+
 def recover_exact_matches(
     *,
     bundle: OntologyBundle,
@@ -447,7 +533,9 @@ def recover_exact_matches(
     admission_path: Path | None = None,
     swipl: str = "swipl",
     timeout_seconds: int = 120,
-    min_support: int = 1,
+    max_bindings: int = _MAX_BINDINGS,
+    max_output_bytes: int = _MAX_OUTPUT_BYTES,
+    min_support: int = 2,
 ) -> tuple[int, int]:
     """Validate artifacts, query PeTTa, and write accepted/rejected bindings."""
 
@@ -466,8 +554,13 @@ def recover_exact_matches(
         raise ValueError("input and output paths must all differ")
     if any(path.exists() for path in outputs):
         raise FileExistsError("exact-match output already exists")
-    if timeout_seconds < 1:
-        raise ValueError("timeout_seconds must be positive")
+    for name, limit in (
+        ("timeout_seconds", timeout_seconds),
+        ("max_bindings", max_bindings),
+        ("max_output_bytes", max_output_bytes),
+    ):
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ValueError(f"{name} must be a positive integer")
     if (
         isinstance(min_support, bool)
         or not isinstance(min_support, int)
@@ -522,6 +615,8 @@ def recover_exact_matches(
             petta_root=petta_root,
             swipl=swipl,
             timeout_seconds=timeout_seconds,
+            max_bindings=max_bindings,
+            max_output_bytes=max_output_bytes,
         )
         if patterns
         else {}
@@ -529,7 +624,7 @@ def recover_exact_matches(
     accepted: list[dict[str, object]] = []
     for index, (pattern, variables) in patterns.items():
         record = support[index]
-        raw = queried.get(index, [])
+        raw = sorted(queried.get(index, []))
         linked: list[dict[str, object]] = []
         excluded: list[dict[str, object]] = []
         try:
@@ -559,8 +654,12 @@ def recover_exact_matches(
                     )
             if len(linked) < min_support:
                 raise ValueError(
-                    f"qualifying support {len(linked)} is below minimum {min_support}; "
-                    "a binding that reuses a ground fact is excluded"
+                    f"qualifying support {len(linked)} is below minimum {min_support}"
+                    + (
+                        "; a binding that reuses a ground fact is excluded"
+                        if excluded
+                        else ""
+                    )
                 )
         except ValueError as error:
             rejected.append(
@@ -575,6 +674,7 @@ def recover_exact_matches(
                 }
             )
             continue
+        linked.sort(key=_binding_order)
         accepted.append(
             {
                 "pattern": pattern,
@@ -635,11 +735,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         arguments.add_argument(f"--{name}", type=Path, required=True)
     arguments.add_argument("--swipl", default="swipl")
     arguments.add_argument("--admission", type=Path)
+    arguments.add_argument("--timeout-seconds", type=int, default=120)
+    arguments.add_argument("--max-bindings", type=int, default=_MAX_BINDINGS)
+    arguments.add_argument("--max-output-bytes", type=int, default=_MAX_OUTPUT_BYTES)
     arguments.add_argument(
         "--min-support",
         type=int,
-        default=1,
-        help="minimum distinct-fact bindings after filtering (default: 1)",
+        default=2,
+        help="minimum distinct-fact bindings after filtering (default: 2)",
     )
     options = arguments.parse_args(argv)
     try:
@@ -656,6 +759,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             admission_path=options.admission,
             swipl=options.swipl,
             min_support=options.min_support,
+            timeout_seconds=options.timeout_seconds,
+            max_bindings=options.max_bindings,
+            max_output_bytes=options.max_output_bytes,
         )
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         print(f"error: {error}", file=sys.stderr)
