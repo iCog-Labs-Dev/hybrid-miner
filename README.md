@@ -9,7 +9,7 @@ service.
 
 ## Initial release scope
 
-The initial release candidate covers standalone graph support mining and an
+Version 0.1.0 covers standalone graph support mining and an
 extraction-stage, depth-zero pipeline with versioned parser-document
 interchange. Its capabilities are:
 
@@ -201,10 +201,9 @@ python -m pytest tests/integration -q
 ```
 
 The integration suite covers fact-only, provisional and rule-bearing inputs,
-as well as the standalone graph interface. The document checks run
-Python ingestion
-and emission, executes the packaged admission rule in PeTTa, passes only the
-admitted graph to Hyperon Miner, recovers exact evidence bindings, and checks
+as well as the standalone graph interface. The document checks run Python
+ingestion and emission, execute the packaged admission rule in PeTTa, pass only
+the admitted graph to Hyperon Miner, recover exact evidence bindings, and check
 that missing metadata produces no support output. The test creates its
 intermediate files in pytest's temporary directory; it does not need an LLM,
 GPU, or production corpus. The commands below show how to run each stage on
@@ -448,9 +447,10 @@ pattern_artifact = pattern.to_canonical_json()
 `ontology-bundle.json`, `document_json`, and `pattern_json` represent input
 artifacts. The bundle requires `ontology-bundle-v1`, a bundle identity and
 version, ontology component versions, declared types, and predicate signatures.
-It checks document provenance and assertion signatures. Matching a candidate
-to its source document and constructing the runtime PeTTa graph remain
-downstream work. The semantic-document `SourceSpan` and pattern
+It checks document provenance and assertion signatures. Graph emission,
+source-linked matching, and candidate construction are provided by the separate
+pipeline stages described above, not by this contract-validation example.
+The semantic-document `SourceSpan` and pattern
 `PatternSourceSpan` are different types and have distinct package exports.
 
 `SemanticDocument` carries an explicit `semantic-document-v1` version.

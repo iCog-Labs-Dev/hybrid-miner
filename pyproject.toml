@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "hybrid-miner"
 version = "0.1.0"
 description = "Ontology-constrained semantic formation and hybrid pattern mining"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["pydantic>=2.6,<3"]
 

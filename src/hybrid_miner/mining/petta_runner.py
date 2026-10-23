@@ -60,7 +60,7 @@ class SupportCount:
 
 @dataclass(frozen=True, slots=True)
 class MiningRun:
-    """Exact support records with the revisions and graph digest used."""
+    """Raw support counts with runtime revisions and graph digest."""
 
     records: tuple[SupportCount, ...]
     graph_sha256: str
