@@ -14,7 +14,7 @@ from hybrid_miner.emission.semantic_rules import (
     RULE_HEADS,
     rule_predicate_view,
 )
-from hybrid_miner.emission.symbols import component, predicate_symbol
+from hybrid_miner.emission.symbols import component, fact_head, predicate_symbol
 from hybrid_miner.ontology import OntologyBundle
 
 PROVISIONAL_RELATION_TYPE = "ProvisionalRelationId"
@@ -26,6 +26,7 @@ class PatternPredicate:
     ontology_version: str
     arity: int | None
     rule: bool = False
+    negative: bool = False
 
     @property
     def provisional(self) -> bool:
@@ -63,16 +64,25 @@ class PatternPredicate:
 
 def pattern_predicates(bundle: OntologyBundle) -> dict[str, PatternPredicate]:
     """Include the explicit provisional channel, not unlisted bare heads."""
-    result = {
-        predicate_symbol(item.name, item.ontology_version): PatternPredicate(
-            item.name, item.ontology_version, len(item.argument_types)
-        )
-        for item in bundle.predicates
-    }
+    result: dict[str, PatternPredicate] = {}
+    for item in bundle.predicates:
+        for polarity in ("positive", "negative"):
+            result[fact_head(item.name, item.ontology_version, polarity)] = (
+                PatternPredicate(
+                    item.name,
+                    item.ontology_version,
+                    len(item.argument_types),
+                    negative=polarity == "negative",
+                )
+            )
     version = f"{bundle.bundle_id}@{bundle.bundle_version}"
-    result[predicate_symbol("ProvisionalRelation", version)] = PatternPredicate(
-        "ProvisionalRelation", version, None
-    )
+    for polarity in ("positive", "negative"):
+        result[fact_head("ProvisionalRelation", version, polarity)] = PatternPredicate(
+            "ProvisionalRelation",
+            version,
+            None,
+            negative=polarity == "negative",
+        )
     result.update(
         {
             predicate_symbol(name, RULE_GRAPH_VERSION): PatternPredicate(

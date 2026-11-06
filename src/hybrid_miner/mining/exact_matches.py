@@ -37,7 +37,7 @@ from hybrid_miner.emission.symbols import (
     component,
     entity_symbol,
     evidence_symbol,
-    predicate_symbol,
+    fact_head,
 )
 from hybrid_miner.ingestion.admission import (
     DocumentKey,
@@ -174,7 +174,8 @@ def _expected_atom(
         entity_symbol(row.corpus_id, row.document_id, argument)
         for argument in assertion.arguments
     )
-    return f"({predicate_symbol(assertion.predicate, version)} {' '.join(operands)})"
+    head = fact_head(assertion.predicate, version, assertion.polarity)
+    return f"({head} {' '.join(operands)})"
 
 
 def _evidence_index(

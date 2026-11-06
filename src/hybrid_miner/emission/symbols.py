@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
+NEGATED_PREFIX = "Negated-"
+
 
 def component(value: str) -> str:
     """Escape PeTTa delimiters without obscuring ordinary identifiers."""
@@ -19,6 +21,12 @@ def entity_symbol(corpus_id: str, document_id: str, entity_id: str) -> str:
 
 def predicate_symbol(predicate: str, ontology_version: str) -> str:
     return f"{component(predicate)}@{component(ontology_version)}"
+
+
+def fact_head(predicate: str, ontology_version: str, polarity: str = "positive") -> str:
+    """Graph head of a ground fact; a negative fact never shares the positive head."""
+    name = NEGATED_PREFIX + predicate if polarity == "negative" else predicate
+    return predicate_symbol(name, ontology_version)
 
 
 def evidence_symbol(corpus_id: str, document_id: str, index: int) -> str:
