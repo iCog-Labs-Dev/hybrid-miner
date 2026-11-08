@@ -331,6 +331,9 @@ class SemanticDocument(_ContractModel):
                 del assertion["factuality"]
             if assertion["conditional_on"] is None:
                 del assertion["conditional_on"]
+            if assertion["polarity"] == "positive":
+                # Keep the bytes of documents written before polarity existed.
+                del assertion["polarity"]
         return json.dumps(
             payload,
             allow_nan=False,
