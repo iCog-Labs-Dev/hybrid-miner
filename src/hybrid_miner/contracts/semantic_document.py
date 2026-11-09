@@ -98,6 +98,9 @@ class SemanticAssertion(_ContractModel):
     arguments: tuple[str, ...] = Field(min_length=1)
     argument_types: tuple[str, ...] = Field(min_length=1)
     status: Literal["extracted-hypothesis"]
+    # A negative fact gets its own graph head, so it never supports a
+    # pattern over the positive predicate (the same rule as RuleLiteral).
+    polarity: Literal["positive", "negative"] = "positive"
     # Source presentation is distinct from the parser's extraction status.
     # None means it was not classified; it must never imply "asserted".
     factuality: Literal["asserted", "opinion", "speculative", "hypothetical"] | None = (
@@ -188,7 +191,6 @@ class RuleVariable(_ContractModel):
 class RuleLiteral(SemanticAssertion):
     """A signed rule clause, not an independently asserted ground fact."""
 
-    polarity: Literal["positive", "negative"] = "positive"
     factuality: Literal["hypothetical"] = "hypothetical"
     conditional_on: None = None
 
@@ -329,6 +331,9 @@ class SemanticDocument(_ContractModel):
                 del assertion["factuality"]
             if assertion["conditional_on"] is None:
                 del assertion["conditional_on"]
+            if assertion["polarity"] == "positive":
+                # Keep the bytes of documents written before polarity existed.
+                del assertion["polarity"]
         return json.dumps(
             payload,
             allow_nan=False,

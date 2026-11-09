@@ -13,6 +13,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from hybrid_miner.contracts.semantic_document import SemanticDocument
+from hybrid_miner.emission.symbols import NEGATED_PREFIX
 
 ONTOLOGY_BUNDLE_CONTRACT_VERSION: Literal["ontology-bundle-v1"] = "ontology-bundle-v1"
 _IDENTIFIER_RE = re.compile(r"^[^\s]+$")
@@ -89,6 +90,11 @@ class OntologyBundle(_BundleModel):
             if predicate.name == "ProvisionalRelation":
                 raise ValueError(
                     "ProvisionalRelation is reserved for uncataloged hypotheses"
+                )
+            if predicate.name.startswith(NEGATED_PREFIX):
+                raise ValueError(
+                    f"predicate {predicate.name!r} uses the reserved "
+                    f"{NEGATED_PREFIX!r} prefix of negative facts"
                 )
             if predicate.name in names:
                 raise ValueError(f"duplicate predicate {predicate.name!r}")

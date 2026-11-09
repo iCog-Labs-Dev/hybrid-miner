@@ -10,10 +10,14 @@ import pytest
 
 from hybrid_miner.contracts import PatternRecord, SemanticDocument
 from hybrid_miner.emission.emit_petta import emit_petta
-from hybrid_miner.emission.symbols import predicate_symbol
+from hybrid_miner.emission.symbols import entity_symbol, fact_head, predicate_symbol
 from hybrid_miner.ingestion import ingest_jsonl
 from hybrid_miner.ingestion.admission import AdmissionManifest
-from hybrid_miner.ingestion.petta_gate import _entry, _petta_checks
+from hybrid_miner.ingestion.petta_gate import (
+    _entry,
+    _petta_checks,
+    gate_emitted_facts,
+)
 from hybrid_miner.mining.admitted_support import (
     AdmissionRejected,
     mine_admitted_support,
@@ -619,6 +623,58 @@ def test_real_petta_signature_authority_is_not_supplied_metadata(
         timeout_seconds=120,
         temporary_parent=tmp_path,
     ) == (set(), {0})
+
+
+def test_real_petta_negative_fact_only_matches_negated_head_and_is_admitted(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle()
+    document = _document("negative-doc", "Mira did not leave.", "mira", "leaving")
+    negative_event = document.assertions[0].model_copy(update={"polarity": "negative"})
+    document = document.model_copy(update={"assertions": (negative_event,)})
+    source = tmp_path / "source.jsonl"
+    source.write_text(document.canonical_json() + "\n", encoding="utf-8")
+    atoms = tmp_path / "facts.metta"
+    metadata = tmp_path / "metadata.metta"
+    provenance = tmp_path / "provenance.jsonl"
+    emit_petta(
+        bundle=bundle,
+        input_path=source,
+        atoms_path=atoms,
+        metadata_path=metadata,
+        provenance_path=provenance,
+    )
+
+    entity = entity_symbol("petta-runtime-fixture", "negative-doc", "leaving")
+    positive_head = fact_head("Event", "upper-v1")
+    negative_head = fact_head("Event", "upper-v1", "negative")
+    assert negative_head == "Negated-Event@upper-v1"
+    assert f"({negative_head} {entity})" in atoms.read_text(encoding="utf-8")
+    petta_root = _runtime_root("PETTA_ROOT")
+    bindings = _query_bindings(
+        {
+            0: (f"({positive_head} $event)", ("$event",)),
+            1: (f"({negative_head} $event)", ("$event",)),
+        },
+        atoms_path=atoms,
+        petta_root=petta_root,
+        swipl="swipl",
+        timeout_seconds=120,
+    )
+    assert bindings[0] == []
+    assert bindings[1] == [(entity,)]
+
+    admission = gate_emitted_facts(
+        bundle=bundle,
+        documents_path=source,
+        atoms_path=atoms,
+        metadata_path=metadata,
+        provenance_path=provenance,
+        petta_root=petta_root,
+        accepted_path=tmp_path / "admitted.metta",
+        rejected_path=tmp_path / "rejected.jsonl",
+    )
+    assert (admission.accepted, admission.rejected, admission.facts) == (1, 0, 1)
 
 
 def test_real_petta_provisional_patterns_reach_records(tmp_path: Path) -> None:

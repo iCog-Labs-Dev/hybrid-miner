@@ -57,7 +57,7 @@ def _fact(
     else:
         version = versions[assertion.predicate]
         operands = []
-    head = symbols.predicate_symbol(assertion.predicate, version)
+    head = symbols.fact_head(assertion.predicate, version, assertion.polarity)
     operands.extend(
         _entity_symbol(document, entity_id) for entity_id in assertion.arguments
     )
@@ -196,19 +196,21 @@ def emit_petta(
             )
             created.append(provenance)
             for predicate in bundle.predicates:
-                head = symbols.predicate_symbol(
-                    predicate.name, predicate.ontology_version
-                )
-                metadata_writer.write(
-                    f"(PredicateIdentity {head} {symbols.component(predicate.name)} "
-                    f"{symbols.component(predicate.ontology_version)})\n"
-                )
-                for position, allowed in enumerate(predicate.argument_types):
-                    for entity_type in allowed:
-                        metadata_writer.write(
-                            f"(AllowedType {head} {position} "
-                            f"{symbols.component(entity_type)})\n"
-                        )
+                for polarity in ("positive", "negative"):
+                    head = symbols.fact_head(
+                        predicate.name, predicate.ontology_version, polarity
+                    )
+                    metadata_writer.write(
+                        f"(PredicateIdentity {head} "
+                        f"{symbols.component(predicate.name)} "
+                        f"{symbols.component(predicate.ontology_version)})\n"
+                    )
+                    for position, allowed in enumerate(predicate.argument_types):
+                        for entity_type in allowed:
+                            metadata_writer.write(
+                                f"(AllowedType {head} {position} "
+                                f"{symbols.component(entity_type)})\n"
+                            )
             for line_number, line in enumerate(reader, start=1):
                 try:
                     document = SemanticDocument.model_validate_json(line)
@@ -233,8 +235,10 @@ def emit_petta(
                     assertion = document.assertions[index]
                     if assertion.predicate == "ProvisionalRelation":
                         assert assertion.provisional_relation_id is not None
-                        head = symbols.predicate_symbol(
-                            "ProvisionalRelation", str(evidence["ontology_version"])
+                        head = symbols.fact_head(
+                            "ProvisionalRelation",
+                            str(evidence["ontology_version"]),
+                            assertion.polarity,
                         )
                         relation = symbols.component(assertion.provisional_relation_id)
                         identity = (head, relation)

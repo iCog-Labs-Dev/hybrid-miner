@@ -191,6 +191,21 @@ def test_factuality_is_optional_without_defaulting_to_asserted():
         SemanticDocument.model_validate(payload)
 
 
+def test_polarity_is_canonical_only_when_negative():
+    document = SemanticDocument.model_validate(_normalized_payload())
+    assertion = json.loads(document.canonical_json())["assertions"][0]
+    assert "polarity" not in assertion  # bytes of pre-polarity documents unchanged
+
+    payload = _normalized_payload()
+    payload["assertions"][0]["polarity"] = "negative"
+    negative = SemanticDocument.model_validate(payload)
+    serialized = negative.canonical_json()
+    assert json.loads(serialized)["assertions"][0]["polarity"] == "negative"
+    assert (
+        SemanticDocument.model_validate_json(serialized).canonical_json() == serialized
+    )
+
+
 def test_conditional_scope_requires_hypothetical_assertion_and_clause():
     payload = _normalized_payload()
     assertion = payload["assertions"][0]

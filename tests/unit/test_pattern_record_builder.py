@@ -8,8 +8,12 @@ import pytest
 
 from hybrid_miner.contracts.semantic_document import SemanticDocument
 from hybrid_miner.emission.emit_petta import emit_petta
-from hybrid_miner.emission.symbols import entity_symbol
-from hybrid_miner.mining.build_pattern_records import _pattern_id, _record
+from hybrid_miner.emission.symbols import entity_symbol, fact_head
+from hybrid_miner.mining.build_pattern_records import (
+    _canonical_term,
+    _pattern_id,
+    _record,
+)
 from hybrid_miner.mining.exact_matches import (
     _documents,
     _evidence_index,
@@ -18,6 +22,33 @@ from hybrid_miner.mining.exact_matches import (
     _pattern_clauses,
 )
 from hybrid_miner.ontology import OntologyBundle
+
+
+def test_negative_pattern_canonical_term_differs_from_positive() -> None:
+    bundle = OntologyBundle.model_validate(
+        {
+            "contract_version": "ontology-bundle-v1",
+            "bundle_id": "record-test",
+            "bundle_version": "1",
+            "ontology_versions": ["upper-v1"],
+            "types": ["Event"],
+            "predicates": [
+                {
+                    "name": "Event",
+                    "ontology_version": "upper-v1",
+                    "argument_types": [["Event"]],
+                }
+            ],
+        }
+    )
+    positive = _canonical_term((("Event@upper-v1", "$v0"),), bundle)
+    negative = _canonical_term(
+        ((fact_head("Event", "upper-v1", "negative"), "$v0"),), bundle
+    )
+
+    assert positive == "(Event $v0)"
+    assert negative == "(Negated-Event $v0)"
+    assert negative != positive
 
 
 @pytest.mark.parametrize("duplicates", [(), (0,), (1,), (0, 1, 1)])

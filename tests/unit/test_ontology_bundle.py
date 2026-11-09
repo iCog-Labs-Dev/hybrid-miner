@@ -7,6 +7,8 @@ import pytest
 from pydantic import ValidationError
 
 from hybrid_miner.contracts.semantic_document import SemanticDocument
+from hybrid_miner.emission.symbols import fact_head
+from hybrid_miner.mining.pattern_predicates import pattern_predicates
 from hybrid_miner.ontology import OntologyBundle
 
 
@@ -102,6 +104,10 @@ def test_requires_supported_explicit_contract_version(contract_version) -> None:
             lambda data: data["predicates"][0].update(name="ProvisionalRelation"),
             "reserved",
         ),
+        (
+            lambda data: data["predicates"][0].update(name="Negated-Concession"),
+            "reserved 'Negated-' prefix",
+        ),
     ],
 )
 def test_rejects_inconsistent_catalog(change, message) -> None:
@@ -154,3 +160,34 @@ def test_rejects_undeclared_entity_type_without_assertions() -> None:
 
     with pytest.raises(ValueError, match="undeclared type"):
         bundle.validate_document(SemanticDocument.model_validate(data))
+
+
+def test_signed_heads_never_collide_with_catalog_heads() -> None:
+    data = _bundle_data()
+    data["predicates"].append(
+        {
+            "name": "Contrast",
+            "ontology_version": "example-discourse-v1",
+            "argument_types": [["Clause"], ["Clause"]],
+        }
+    )
+    bundle = OntologyBundle.model_validate(data)
+    facts = {
+        head: predicate
+        for head, predicate in pattern_predicates(bundle).items()
+        if not predicate.rule
+    }
+
+    # every catalog predicate and ProvisionalRelation, once positive, once negative
+    assert len(facts) == 2 * (len(bundle.predicates) + 1)
+    for predicate in bundle.predicates:
+        positive = fact_head(predicate.name, predicate.ontology_version)
+        negative = fact_head(predicate.name, predicate.ontology_version, "negative")
+        assert (facts[positive].name, facts[positive].negative) == (
+            predicate.name,
+            False,
+        )
+        assert (facts[negative].name, facts[negative].negative) == (
+            predicate.name,
+            True,
+        )
