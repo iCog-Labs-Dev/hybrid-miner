@@ -206,6 +206,25 @@ def test_polarity_is_canonical_only_when_negative():
     )
 
 
+def test_modality_is_canonical_only_when_present():
+    document = SemanticDocument.model_validate(_normalized_payload())
+    assert "modality" not in json.loads(document.canonical_json())["assertions"][0]
+
+    payload = _normalized_payload()
+    payload["assertions"][0].update(polarity="negative", modality="obligation")
+    prohibited = SemanticDocument.model_validate(payload)
+    serialized = prohibited.canonical_json()
+    assertion = json.loads(serialized)["assertions"][0]
+    assert (assertion["polarity"], assertion["modality"]) == ("negative", "obligation")
+    assert (
+        SemanticDocument.model_validate_json(serialized).canonical_json() == serialized
+    )
+
+    payload["assertions"][0]["modality"] = "may"
+    with pytest.raises(ValidationError, match="modality"):
+        SemanticDocument.model_validate(payload)
+
+
 def test_conditional_scope_requires_hypothetical_assertion_and_clause():
     payload = _normalized_payload()
     assertion = payload["assertions"][0]

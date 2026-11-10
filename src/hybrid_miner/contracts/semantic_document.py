@@ -101,6 +101,11 @@ class SemanticAssertion(_ContractModel):
     # A negative fact gets its own graph head, so it never supports a
     # pattern over the positive predicate (the same rule as RuleLiteral).
     polarity: Literal["positive", "negative"] = "positive"
+    # Obligation or permission is not a done fact: a modal fact gets its own graph
+    # head too. Negation scope follows the parser: obligation + negative is an
+    # obligation not to act ("must not leave"), while permission + negative is
+    # no permission to act ("may not leave").
+    modality: Literal["none", "obligation", "permission"] = "none"
     # Source presentation is distinct from the parser's extraction status.
     # None means it was not classified; it must never imply "asserted".
     factuality: Literal["asserted", "opinion", "speculative", "hypothetical"] | None = (
@@ -192,6 +197,7 @@ class RuleLiteral(SemanticAssertion):
     """A signed rule clause, not an independently asserted ground fact."""
 
     factuality: Literal["hypothetical"] = "hypothetical"
+    modality: Literal["none"] = "none"
     conditional_on: None = None
 
 
@@ -334,6 +340,12 @@ class SemanticDocument(_ContractModel):
             if assertion["polarity"] == "positive":
                 # Keep the bytes of documents written before polarity existed.
                 del assertion["polarity"]
+            if assertion["modality"] == "none":
+                # Same for modality, added after polarity.
+                del assertion["modality"]
+        for rule in payload.get("rules", ()):
+            for literal in (*rule["antecedents"], *rule["consequents"]):
+                del literal["modality"]  # rule literals never carry modality
         return json.dumps(
             payload,
             allow_nan=False,

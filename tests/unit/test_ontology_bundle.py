@@ -7,7 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from hybrid_miner.contracts.semantic_document import SemanticDocument
-from hybrid_miner.emission.symbols import fact_head
+from hybrid_miner.emission.symbols import FACT_VARIANTS, fact_head
 from hybrid_miner.mining.pattern_predicates import pattern_predicates
 from hybrid_miner.ontology import OntologyBundle
 
@@ -108,6 +108,14 @@ def test_requires_supported_explicit_contract_version(contract_version) -> None:
             lambda data: data["predicates"][0].update(name="Negated-Concession"),
             "reserved 'Negated-' prefix",
         ),
+        (
+            lambda data: data["predicates"][0].update(name="Obligation-Concession"),
+            "reserved 'Obligation-' prefix",
+        ),
+        (
+            lambda data: data["predicates"][0].update(name="Permission-Concession"),
+            "reserved 'Permission-' prefix",
+        ),
     ],
 )
 def test_rejects_inconsistent_catalog(change, message) -> None:
@@ -178,8 +186,8 @@ def test_signed_heads_never_collide_with_catalog_heads() -> None:
         if not predicate.rule
     }
 
-    # every catalog predicate and ProvisionalRelation, once positive, once negative
-    assert len(facts) == 2 * (len(bundle.predicates) + 1)
+    # every catalog predicate and ProvisionalRelation, once per sign and modality
+    assert len(facts) == len(FACT_VARIANTS) * (len(bundle.predicates) + 1)
     for predicate in bundle.predicates:
         positive = fact_head(predicate.name, predicate.ontology_version)
         negative = fact_head(predicate.name, predicate.ontology_version, "negative")

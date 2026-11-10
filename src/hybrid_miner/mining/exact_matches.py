@@ -174,7 +174,9 @@ def _expected_atom(
         entity_symbol(row.corpus_id, row.document_id, argument)
         for argument in assertion.arguments
     )
-    head = fact_head(assertion.predicate, version, assertion.polarity)
+    head = fact_head(
+        assertion.predicate, version, assertion.polarity, assertion.modality
+    )
     return f"({head} {' '.join(operands)})"
 
 
@@ -490,6 +492,8 @@ def _linked_binding(
                 "ontology_version": row.ontology_version,
                 "status": row.assertion.status,
                 "factuality": row.assertion.factuality,
+                "polarity": row.assertion.polarity,
+                "modality": row.assertion.modality,
                 "confidence": row.assertion.confidence,
                 "source_spans": [
                     {

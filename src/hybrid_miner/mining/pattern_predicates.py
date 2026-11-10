@@ -14,7 +14,12 @@ from hybrid_miner.emission.semantic_rules import (
     RULE_HEADS,
     rule_predicate_view,
 )
-from hybrid_miner.emission.symbols import component, fact_head, predicate_symbol
+from hybrid_miner.emission.symbols import (
+    FACT_VARIANTS,
+    component,
+    fact_head,
+    predicate_symbol,
+)
 from hybrid_miner.ontology import OntologyBundle
 
 PROVISIONAL_RELATION_TYPE = "ProvisionalRelationId"
@@ -27,6 +32,7 @@ class PatternPredicate:
     arity: int | None
     rule: bool = False
     negative: bool = False
+    modality: str = "none"
 
     @property
     def provisional(self) -> bool:
@@ -65,23 +71,21 @@ class PatternPredicate:
 def pattern_predicates(bundle: OntologyBundle) -> dict[str, PatternPredicate]:
     """Include the explicit provisional channel, not unlisted bare heads."""
     result: dict[str, PatternPredicate] = {}
-    for item in bundle.predicates:
-        for polarity in ("positive", "negative"):
-            result[fact_head(item.name, item.ontology_version, polarity)] = (
-                PatternPredicate(
-                    item.name,
-                    item.ontology_version,
-                    len(item.argument_types),
-                    negative=polarity == "negative",
-                )
-            )
     version = f"{bundle.bundle_id}@{bundle.bundle_version}"
-    for polarity in ("positive", "negative"):
-        result[fact_head("ProvisionalRelation", version, polarity)] = PatternPredicate(
-            "ProvisionalRelation",
-            version,
-            None,
-            negative=polarity == "negative",
+    for polarity, modality in FACT_VARIANTS:
+        negative = polarity == "negative"
+        for item in bundle.predicates:
+            head = fact_head(item.name, item.ontology_version, polarity, modality)
+            result[head] = PatternPredicate(
+                item.name,
+                item.ontology_version,
+                len(item.argument_types),
+                negative=negative,
+                modality=modality,
+            )
+        head = fact_head("ProvisionalRelation", version, polarity, modality)
+        result[head] = PatternPredicate(
+            "ProvisionalRelation", version, None, negative=negative, modality=modality
         )
     result.update(
         {

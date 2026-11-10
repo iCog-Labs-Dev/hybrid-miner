@@ -80,20 +80,18 @@ class _Entry:
 def _schema_atoms(bundle: OntologyBundle) -> list[str]:
     """Compile trusted declarations from the caller's bundle, never metadata."""
     result = [f"(KnownType {symbols.component(t)})" for t in bundle.types]
-    provisional = symbols.predicate_symbol(
-        "ProvisionalRelation", f"{bundle.bundle_id}@{bundle.bundle_version}"
-    )
-    result.append(f"(ProvisionalHead {provisional})")
-    negative_provisional = symbols.fact_head(
-        "ProvisionalRelation",
-        f"{bundle.bundle_id}@{bundle.bundle_version}",
-        "negative",
-    )
-    result.append(f"(ProvisionalHead {negative_provisional})")
+    for polarity, modality in symbols.FACT_VARIANTS:
+        signed = symbols.fact_head(
+            "ProvisionalRelation",
+            f"{bundle.bundle_id}@{bundle.bundle_version}",
+            polarity,
+            modality,
+        )
+        result.append(f"(ProvisionalHead {signed})")
     for signature in bundle.predicates:
-        for polarity in ("positive", "negative"):
+        for polarity, modality in symbols.FACT_VARIANTS:
             head = symbols.fact_head(
-                signature.name, signature.ontology_version, polarity
+                signature.name, signature.ontology_version, polarity, modality
             )
             result.append(f"(PredicateArity {head} {len(signature.argument_types)})")
             result.extend(
@@ -116,6 +114,7 @@ def _signature_requirements(
             "ProvisionalRelation",
             f"{bundle.bundle_id}@{bundle.bundle_version}",
             assertion.polarity,
+            assertion.modality,
         )
         result.append(f"(schema (ProvisionalHead {head}))")
         return result
@@ -125,7 +124,10 @@ def _signature_requirements(
     if signature is None:
         raise ValueError(f"undeclared predicate {assertion.predicate!r}")
     head = symbols.fact_head(
-        signature.name, signature.ontology_version, assertion.polarity
+        signature.name,
+        signature.ontology_version,
+        assertion.polarity,
+        assertion.modality,
     )
     result.append(f"(schema (PredicateArity {head} {len(assertion.arguments)}))")
     result.extend(
@@ -175,7 +177,9 @@ def _entry(
         raise ValueError("bundle_id does not match the selected bundle")
     if payload["bundle_version"] != bundle.bundle_version:
         raise ValueError("bundle_version does not match the selected bundle")
-    head = symbols.fact_head(assertion.predicate, version, assertion.polarity)
+    head = symbols.fact_head(
+        assertion.predicate, version, assertion.polarity, assertion.modality
+    )
     entities = [
         symbols.entity_symbol(corpus_id, document_id, argument)
         for argument in assertion.arguments
