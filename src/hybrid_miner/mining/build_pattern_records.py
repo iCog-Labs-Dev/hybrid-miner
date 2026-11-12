@@ -23,7 +23,7 @@ from hybrid_miner.emission.semantic_rules import (
     rule_predicate_view,
     rule_source,
 )
-from hybrid_miner.emission.symbols import NEGATED_PREFIX, component, evidence_symbol
+from hybrid_miner.emission.symbols import component, evidence_symbol, fact_name
 from hybrid_miner.ingestion.admission import excluded_documents
 from hybrid_miner.mining.canonicalize_patterns import (
     Expression,
@@ -69,7 +69,11 @@ def _canonical_term(
         operands = list(clause[1:])
         if predicate.rule and predicate.name != "ExtractedRule":
             operands[1] = rule_predicate_view(operands[1], bundle)
-        name = NEGATED_PREFIX + predicate.name if predicate.negative else predicate.name
+        name = fact_name(
+            predicate.name,
+            "negative" if predicate.negative else "positive",
+            predicate.modality,
+        )
         terms.append((name, *operands))
     bare = tuple(terms)
     expression: Expression = bare[0] if len(bare) == 1 else (",", *bare)
@@ -153,6 +157,7 @@ def _record(
     model_revisions: set[str | None] = set()
     factuality_counts: dict[str, int] = {}
     polarity_counts: dict[str, int] = {}
+    modality_counts: dict[str, int] = {}
     seen_bindings: set[tuple[str, tuple[tuple[str, str], ...]]] = set()
     verified_bindings: list[tuple[dict[str, object], dict[str, str]]] = []
     for binding in bindings:
@@ -255,8 +260,10 @@ def _record(
                 raise ValueError("exact evidence has no document assertion")
             assertion = document.assertions[index]
             predicate = heads[clause[0]]
-            if predicate.name != assertion.predicate or predicate.negative != (
-                assertion.polarity == "negative"
+            if (
+                predicate.name != assertion.predicate
+                or predicate.negative != (assertion.polarity == "negative")
+                or predicate.modality != assertion.modality
             ):
                 raise ValueError("exact evidence predicate differs from pattern")
             operands = clause[1:]
@@ -293,6 +300,9 @@ def _record(
             factuality_counts[factuality] = factuality_counts.get(factuality, 0) + 1
             polarity_counts[assertion.polarity] = (
                 polarity_counts.get(assertion.polarity, 0) + 1
+            )
+            modality_counts[assertion.modality] = (
+                modality_counts.get(assertion.modality, 0) + 1
             )
         for variable, allowed_types in binding_allowed.items():
             permitted_types.setdefault(variable, set()).update(allowed_types)
@@ -388,6 +398,7 @@ def _record(
             ),
             "factuality_counts": factuality_counts,
             "polarity_counts": polarity_counts,
+            "modality_counts": modality_counts,
             "minimum_parser_confidence": min(confidences),
             "qualified_pattern": pattern,
             "graph_sha256": row["graph_sha256"],

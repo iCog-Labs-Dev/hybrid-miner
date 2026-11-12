@@ -677,6 +677,67 @@ def test_real_petta_negative_fact_only_matches_negated_head_and_is_admitted(
     assert (admission.accepted, admission.rejected, admission.facts) == (1, 0, 1)
 
 
+def test_real_petta_modal_facts_keep_their_own_heads(tmp_path: Path) -> None:
+    bundle = _bundle()
+    variants = [
+        ("done", "positive", "none"),
+        ("must", "positive", "obligation"),
+        ("may", "positive", "permission"),
+        ("must-not", "negative", "obligation"),
+        ("may-not", "negative", "permission"),
+    ]
+    documents = []
+    for name, polarity, modality in variants:
+        document = _document(name, "Mira left.", "mira", "leaving")
+        event = document.assertions[0].model_copy(
+            update={"polarity": polarity, "modality": modality}
+        )
+        documents.append(document.model_copy(update={"assertions": (event,)}))
+    source = tmp_path / "source.jsonl"
+    source.write_text(
+        "".join(document.canonical_json() + "\n" for document in documents),
+        encoding="utf-8",
+    )
+    atoms = tmp_path / "facts.metta"
+    metadata = tmp_path / "metadata.metta"
+    provenance = tmp_path / "provenance.jsonl"
+    emit_petta(
+        bundle=bundle,
+        input_path=source,
+        atoms_path=atoms,
+        metadata_path=metadata,
+        provenance_path=provenance,
+    )
+    petta_root = _runtime_root("PETTA_ROOT")
+    admission = gate_emitted_facts(
+        bundle=bundle,
+        documents_path=source,
+        atoms_path=atoms,
+        metadata_path=metadata,
+        provenance_path=provenance,
+        petta_root=petta_root,
+        accepted_path=tmp_path / "admitted.metta",
+        rejected_path=tmp_path / "rejected.jsonl",
+    )
+    assert (admission.accepted, admission.rejected) == (5, 0)
+
+    queries = {
+        index: (f"({fact_head('Event', 'upper-v1', polarity, modality)} $e)", ("$e",))
+        for index, (_, polarity, modality) in enumerate(variants)
+    }
+    bindings = _query_bindings(
+        queries,
+        atoms_path=tmp_path / "admitted.metta",
+        petta_root=petta_root,
+        swipl="swipl",
+        timeout_seconds=120,
+    )
+    for index, (name, _, _) in enumerate(variants):
+        assert bindings[index] == [
+            (entity_symbol("petta-runtime-fixture", name, "leaving"),)
+        ]
+
+
 def test_real_petta_provisional_patterns_reach_records(tmp_path: Path) -> None:
     """Protect the complete provisional path in the pinned runtime CI job."""
     bundle = _bundle()

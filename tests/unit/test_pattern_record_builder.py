@@ -49,6 +49,16 @@ def test_negative_pattern_canonical_term_differs_from_positive() -> None:
     assert positive == "(Event $v0)"
     assert negative == "(Negated-Event $v0)"
     assert negative != positive
+    prohibited = _canonical_term(
+        ((fact_head("Event", "upper-v1", "negative", "permission"), "$v0"),), bundle
+    )
+    # "may not": the parser's (Not (Permission p)), a prohibition
+    assert prohibited == "(Negated-Permission-Event $v0)"
+    # "must not": the parser's (Obligation (Not p))
+    must_not = _canonical_term(
+        ((fact_head("Event", "upper-v1", "negative", "obligation"), "$v0"),), bundle
+    )
+    assert must_not == "(Obligation-Negated-Event $v0)"
 
 
 @pytest.mark.parametrize("duplicates", [(), (0,), (1,), (0, 1, 1)])
@@ -362,3 +372,153 @@ def test_binding_order_preserves_occurrences_and_identical_record_bytes(tmp_path
     reordered["exact_bindings"][0]["evidence"][0]["confidence"] = 0.1
     with pytest.raises(ValueError, match="disagrees with source evidence"):
         _record(reordered, **options)
+
+
+@pytest.mark.parametrize(
+    ("polarity", "modality", "head"),
+    [
+        ("negative", "obligation", "Obligation-Negated-Event"),  # must not sing
+        ("negative", "permission", "Negated-Permission-Event"),  # may not sing
+        ("positive", "permission", "Permission-Event"),  # may sing
+    ],
+)
+def test_modal_record_keeps_its_head_and_counts(
+    tmp_path, polarity, modality, head
+) -> None:
+    bundle = OntologyBundle.model_validate(
+        {
+            "contract_version": "ontology-bundle-v1",
+            "bundle_id": "record-test",
+            "bundle_version": "1",
+            "ontology_versions": ["upper-v1"],
+            "types": ["Event", "Entity"],
+            "predicates": [
+                {
+                    "name": "Event",
+                    "ontology_version": "upper-v1",
+                    "argument_types": [["Event"]],
+                },
+                {
+                    "name": "Agent",
+                    "ontology_version": "upper-v1",
+                    "argument_types": [["Event"], ["Entity"]],
+                },
+            ],
+        }
+    )
+    payload = {
+        "document_id": "doc-1",
+        "corpus_id": "corpus-1",
+        "source_text": "Nora sang.",
+        "parser": {
+            "model": "teacher",
+            "parser_version": "parser-v1",
+            "prompt_version": "prompt-v1",
+            "ontology_versions": ["upper-v1"],
+        },
+        "entities": [
+            {"id": "nora", "type": "Entity", "span": {"start": 0, "end": 4}},
+            {"id": "singing", "type": "Event", "span": {"start": 5, "end": 9}},
+        ],
+        "assertions": [
+            {
+                "predicate": "Event",
+                "arguments": ["singing"],
+                "argument_types": ["Event"],
+                "status": "extracted-hypothesis",
+                "factuality": "asserted",
+                "polarity": polarity,
+                "modality": modality,
+                "confidence": 0.95,
+                "source_spans": [{"start": 5, "end": 9}],
+            },
+            {
+                "predicate": "Agent",
+                "arguments": ["singing", "nora"],
+                "argument_types": ["Event", "Entity"],
+                "status": "extracted-hypothesis",
+                "factuality": "asserted",
+                "confidence": 0.9,
+                "source_spans": [{"start": 0, "end": 9}],
+            },
+        ],
+    }
+    source = tmp_path / "documents.jsonl"
+    source.write_text(
+        SemanticDocument.model_validate(payload).canonical_json() + "\n",
+        encoding="utf-8",
+    )
+    atoms = tmp_path / "facts.metta"
+    provenance = tmp_path / "provenance.jsonl"
+    emit_petta(
+        bundle=bundle,
+        input_path=source,
+        atoms_path=atoms,
+        metadata_path=tmp_path / "metadata.metta",
+        provenance_path=provenance,
+    )
+    facts = _facts(atoms)
+    documents = _documents(source, bundle)
+    evidence = _evidence_index(provenance, facts, documents, bundle)
+    pattern = f"(, (Agent@upper-v1 $v0 $v1) ({head}@upper-v1 $v0))"
+    clauses, variables = _pattern_clauses(pattern, bundle)
+    binding = _linked_binding(
+        clauses,
+        variables,
+        (
+            entity_symbol("corpus-1", "doc-1", "singing"),
+            entity_symbol("corpus-1", "doc-1", "nora"),
+        ),
+        facts=facts,
+        evidence=evidence,
+        documents=documents,
+    )
+    linked = [row for row in binding["evidence"] if row["predicate"] == "Event"]
+    assert [(row["polarity"], row["modality"]) for row in linked] == [
+        (polarity, modality)
+    ]
+    digest = hashlib.sha256(atoms.read_bytes()).hexdigest()
+    row = {
+        "pattern": pattern,
+        "exact_bindings": [binding],
+        "reported_support": 1,
+        "bundle_id": "record-test",
+        "bundle_version": "1",
+        "graph_sha256": digest,
+        "miner_revision": "miner-revision-1",
+        "petta_revision": "petta-revision-1",
+    }
+    record = _record(
+        row,
+        bundle=bundle,
+        facts=facts,
+        documents=documents,
+        evidence=evidence,
+        graph_sha256=digest,
+    )
+    assert record.canonical_term == f"(, (Agent $v0 $v1) ({head} $v0))"
+    assert record.expensive_trace["polarity_counts"] == {
+        "positive": 1 + (polarity == "positive"),
+        **({"negative": 1} if polarity == "negative" else {}),
+    }
+    assert record.expensive_trace["modality_counts"] == {"none": 1, modality: 1}
+
+    # the same evidence under another modality must be refused, not merged
+    changed = deepcopy(payload)
+    changed["assertions"][0]["modality"] = (
+        "obligation" if modality == "permission" else "permission"
+    )
+    other = tmp_path / "changed.jsonl"
+    other.write_text(
+        SemanticDocument.model_validate(changed).canonical_json() + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="predicate differs from pattern"):
+        _record(
+            row,
+            bundle=bundle,
+            facts=facts,
+            documents=_documents(other, bundle),
+            evidence=evidence,
+            graph_sha256=digest,
+        )

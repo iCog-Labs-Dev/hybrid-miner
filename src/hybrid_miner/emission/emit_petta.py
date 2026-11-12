@@ -57,7 +57,9 @@ def _fact(
     else:
         version = versions[assertion.predicate]
         operands = []
-    head = symbols.fact_head(assertion.predicate, version, assertion.polarity)
+    head = symbols.fact_head(
+        assertion.predicate, version, assertion.polarity, assertion.modality
+    )
     operands.extend(
         _entity_symbol(document, entity_id) for entity_id in assertion.arguments
     )
@@ -196,9 +198,9 @@ def emit_petta(
             )
             created.append(provenance)
             for predicate in bundle.predicates:
-                for polarity in ("positive", "negative"):
+                for polarity, modality in symbols.FACT_VARIANTS:
                     head = symbols.fact_head(
-                        predicate.name, predicate.ontology_version, polarity
+                        predicate.name, predicate.ontology_version, polarity, modality
                     )
                     metadata_writer.write(
                         f"(PredicateIdentity {head} "
@@ -239,6 +241,7 @@ def emit_petta(
                             "ProvisionalRelation",
                             str(evidence["ontology_version"]),
                             assertion.polarity,
+                            assertion.modality,
                         )
                         relation = symbols.component(assertion.provisional_relation_id)
                         identity = (head, relation)
